@@ -1,0 +1,2842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deer Trail Cam Scorer</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #f4f4f4;
+    color: #222;
+}
+
+button {
+    border: none;
+    border-radius: 6px;
+    padding: 9px 12px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+input,
+select,
+textarea {
+    font-family: Arial, sans-serif;
+}
+
+header {
+    background: #1f4d2b;
+    color: white;
+    padding: 15px 22px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 22px;
+}
+
+.header-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.header-button {
+    background: white;
+    color: #1f4d2b;
+}
+
+.nav {
+    background: #163a20;
+    display: flex;
+}
+
+.nav button {
+    background: transparent;
+    color: white;
+    border-radius: 0;
+    padding: 12px 20px;
+}
+
+.nav button.active {
+    background: white;
+    color: #1f4d2b;
+}
+
+.app {
+    display: flex;
+    height: calc(100vh - 105px);
+}
+
+.sidebar {
+    width: 360px;
+    background: white;
+    padding: 18px;
+    overflow-y: auto;
+    border-right: 1px solid #ddd;
+}
+
+#map {
+    flex: 1;
+    min-height: 400px;
+}
+
+h2,
+h3 {
+    margin-top: 0;
+}
+
+.section {
+    margin-bottom: 22px;
+}
+
+.card {
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 13px;
+    margin-bottom: 10px;
+}
+
+.card h3 {
+    margin-bottom: 7px;
+}
+
+.card p {
+    margin: 5px 0;
+    color: #555;
+    font-size: 13px;
+}
+
+.primary {
+    background: #1f4d2b;
+    color: white;
+}
+
+.danger {
+    background: #c0392b;
+    color: white;
+}
+
+.secondary {
+    background: #ddd;
+    color: #222;
+}
+
+.trail-button {
+    width: 100%;
+    background: #6b4f2a;
+    color: white;
+    margin-bottom: 8px;
+}
+
+.finish-button {
+    width: 100%;
+    background: #1f4d2b;
+    color: white;
+    margin-bottom: 8px;
+}
+
+.cancel-button {
+    width: 100%;
+    background: #777;
+    color: white;
+}
+
+.form-group {
+    margin-bottom: 12px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 9px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+}
+
+.form-group textarea {
+    min-height: 75px;
+    resize: vertical;
+}
+
+.form-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.form-buttons button {
+    flex: 1;
+}
+
+.sighting {
+    border-top: 1px solid #ddd;
+    padding-top: 10px;
+    margin-top: 10px;
+}
+
+.sighting:first-child {
+    border-top: none;
+}
+
+.sighting strong {
+    display: block;
+}
+
+.sighting small {
+    color: #666;
+}
+
+.drawing {
+    background: #fff3cd;
+    border: 1px solid #ffe69c;
+    padding: 10px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+.dashboard {
+    height: calc(100vh - 105px);
+    overflow-y: auto;
+    padding: 25px;
+}
+
+.dashboard-inner {
+    max-width: 1400px;
+    margin: auto;
+}
+
+.dashboard-title {
+    margin-bottom: 20px;
+}
+
+.dashboard-title h2 {
+    margin-bottom: 5px;
+}
+
+.dashboard-title p {
+    margin: 0;
+    color: #666;
+}
+
+.stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.stat {
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 18px;
+}
+
+.stat-label {
+    color: #666;
+    font-size: 13px;
+}
+
+.stat-value {
+    color: #1f4d2b;
+    font-size: 28px;
+    font-weight: bold;
+    margin-top: 8px;
+}
+
+.stat-detail {
+    color: #777;
+    font-size: 12px;
+    margin-top: 5px;
+}
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.dashboard-card {
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 18px;
+}
+
+.dashboard-card h3 {
+    margin-bottom: 18px;
+}
+
+.wide {
+    grid-column: 1 / -1;
+}
+
+.bar-row {
+    margin-bottom: 14px;
+}
+
+.bar-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 5px;
+}
+
+.bar-background {
+    background: #e5e5e5;
+    height: 12px;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.bar {
+    height: 100%;
+    background: #1f4d2b;
+}
+
+.recent-item {
+    border: 1px solid #ddd;
+    border-radius: 7px;
+    padding: 11px;
+    margin-bottom: 9px;
+}
+
+.recent-item strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.recent-item span {
+    font-size: 13px;
+    color: #666;
+}
+
+.table-wrapper {
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th,
+td {
+    padding: 9px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+    font-size: 13px;
+}
+
+th {
+    color: #555;
+}
+
+.empty {
+    color: #777;
+    font-size: 14px;
+}
+
+.file-input {
+    display: none;
+}
+
+.data-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.data-buttons button {
+    flex: 1;
+}
+
+@media (max-width: 1000px) {
+    .stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .wide {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 700px) {
+    header {
+        padding: 12px;
+    }
+
+    header h1 {
+        font-size: 18px;
+    }
+
+    .header-buttons button {
+        font-size: 11px;
+        padding: 7px;
+    }
+
+    .nav button {
+        flex: 1;
+        padding: 10px;
+    }
+
+    .app {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        width: 100%;
+        height: 370px;
+        border-right: none;
+        border-bottom: 1px solid #ddd;
+    }
+
+    #map {
+        height: calc(100vh - 475px);
+    }
+
+    .dashboard {
+        padding: 15px;
+    }
+
+    .stats {
+        gap: 10px;
+    }
+
+    .stat {
+        padding: 13px;
+    }
+
+    .stat-value {
+        font-size: 22px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+
+const e = React.createElement;
+const useState = React.useState;
+const useEffect = React.useEffect;
+const useRef = React.useRef;
+
+const CAMERA_KEY = "deerCameras";
+const TRAIL_KEY = "deerTrails";
+
+function getCameras() {
+    try {
+        const data = JSON.parse(localStorage.getItem(CAMERA_KEY));
+
+        if (!Array.isArray(data)) {
+            return [];
+        }
+
+        return data.map(function(camera) {
+            return {
+                id: camera.id || Date.now(),
+                name: camera.name || "Camera",
+                lat: Number(camera.lat),
+                lng: Number(camera.lng),
+                sightings: Array.isArray(camera.sightings)
+                    ? camera.sightings
+                    : []
+            };
+        }).filter(function(camera) {
+            return Number.isFinite(camera.lat) &&
+                   Number.isFinite(camera.lng);
+        });
+
+    } catch {
+        return [];
+    }
+}
+
+function getTrails() {
+    try {
+        const data = JSON.parse(localStorage.getItem(TRAIL_KEY));
+
+        if (!Array.isArray(data)) {
+            return [];
+        }
+
+        return data;
+
+    } catch {
+        return [];
+    }
+}
+
+function saveData(cameras, trails) {
+    localStorage.setItem(
+        CAMERA_KEY,
+        JSON.stringify(cameras)
+    );
+
+    localStorage.setItem(
+        TRAIL_KEY,
+        JSON.stringify(trails)
+    );
+}
+
+function App() {
+
+    const [view, setView] = useState("dashboard");
+
+    const [cameras, setCameras] = useState(getCameras);
+    const [trails, setTrails] = useState(getTrails);
+
+    const [selectedCameraId, setSelectedCameraId] =
+        useState(null);
+
+    const [showSightingForm, setShowSightingForm] =
+        useState(false);
+
+    const [drawingTrail, setDrawingTrail] =
+        useState(false);
+
+    const [currentTrailPoints, setCurrentTrailPoints] =
+        useState([]);
+
+    const [date, setDate] = useState("");
+    const [time, setTime] = useState("");
+    const [deerType, setDeerType] = useState("Buck");
+    const [number, setNumber] = useState("1");
+    const [antlerPoints, setAntlerPoints] = useState("");
+    const [estimatedScore, setEstimatedScore] = useState("");
+    const [notes, setNotes] = useState("");
+
+    const mapRef = useRef(null);
+    const cameraMarkersRef = useRef({});
+    const trailLayersRef = useRef([]);
+    const currentTrailLayerRef = useRef(null);
+    const drawingTrailRef = useRef(false);
+
+    useEffect(function() {
+
+        saveData(cameras, trails);
+
+    }, [cameras, trails]);
+
+    const selectedCamera = cameras.find(function(camera) {
+        return camera.id === selectedCameraId;
+    });
+
+    function initializeMap() {
+
+        if (mapRef.current) {
+            setTimeout(function() {
+                mapRef.current.invalidateSize();
+            }, 100);
+            return;
+        }
+
+        const map = L.map("map").setView(
+            [42.84, -88.54],
+            13
+        );
+
+        mapRef.current = map;
+
+        L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            {
+                attribution: "Tiles &copy; Esri"
+            }
+        ).addTo(map);
+
+        cameras.forEach(function(camera) {
+            addCameraMarker(camera);
+        });
+
+        trails.forEach(function(trail) {
+            drawSavedTrail(trail);
+        });
+
+        map.on("click", function(event) {
+
+            if (drawingTrailRef.current) {
+
+                const point = [
+                    event.latlng.lat,
+                    event.latlng.lng
+                ];
+
+                setCurrentTrailPoints(function(previous) {
+                    return [...previous, point];
+                });
+
+                return;
+            }
+
+            const name = prompt(
+                "Enter a name for this camera:"
+            );
+
+            if (!name) return;
+
+            const camera = {
+                id: Date.now(),
+                name: name,
+                lat: event.latlng.lat,
+                lng: event.latlng.lng,
+                sightings: []
+            };
+
+            setCameras(function(previous) {
+                return [...previous, camera];
+            });
+
+            addCameraMarker(camera);
+
+            setSelectedCameraId(camera.id);
+        });
+    }
+
+    useEffect(function() {
+
+        if (view !== "map") return;
+
+        setTimeout(function() {
+            initializeMap();
+
+            if (mapRef.current) {
+                mapRef.current.invalidateSize();
+            }
+        }, 100);
+
+    }, [view]);
+
+    function addCameraMarker(camera) {
+
+        if (!mapRef.current) return;
+
+        if (cameraMarkersRef.current[camera.id]) {
+            return;
+        }
+
+        const marker = L.circleMarker(
+            [camera.lat, camera.lng],
+            {
+                radius: 7,
+                color: "white",
+                weight: 2,
+                fillColor: "red",
+                fillOpacity: 1
+            }
+        ).addTo(mapRef.current);
+
+        marker.on("click", function(event) {
+
+            L.DomEvent.stopPropagation(event);
+
+            setSelectedCameraId(camera.id);
+            setShowSightingForm(false);
+
+            mapRef.current.setView(
+                [camera.lat, camera.lng],
+                16
+            );
+        });
+
+        cameraMarkersRef.current[camera.id] = marker;
+    }
+
+    function drawSavedTrail(trail) {
+
+        if (!mapRef.current) return;
+
+        const line = L.polyline(
+            trail.points,
+            {
+                color: "yellow",
+                weight: 5,
+                opacity: 0.9
+            }
+        ).addTo(mapRef.current);
+
+        trailLayersRef.current.push(line);
+    }
+
+    useEffect(function() {
+
+        if (!mapRef.current) return;
+
+        if (currentTrailLayerRef.current) {
+
+            mapRef.current.removeLayer(
+                currentTrailLayerRef.current
+            );
+
+            currentTrailLayerRef.current = null;
+        }
+
+        if (currentTrailPoints.length >= 2) {
+
+            currentTrailLayerRef.current =
+                L.polyline(
+                    currentTrailPoints,
+                    {
+                        color: "yellow",
+                        weight: 5,
+                        opacity: 0.9
+                    }
+                ).addTo(mapRef.current);
+        }
+
+    }, [currentTrailPoints]);
+
+    function openCamera(camera) {
+
+        setSelectedCameraId(camera.id);
+        setShowSightingForm(false);
+        setView("map");
+
+        setTimeout(function() {
+
+            if (mapRef.current) {
+
+                mapRef.current.setView(
+                    [camera.lat, camera.lng],
+                    16
+                );
+            }
+
+        }, 150);
+    }
+
+    function deleteCamera(id) {
+
+        const camera = cameras.find(function(item) {
+            return item.id === id;
+        });
+
+        if (!camera) return;
+
+        const confirmed = confirm(
+            "Delete " +
+            camera.name +
+            " and all of its sightings?"
+        );
+
+        if (!confirmed) return;
+
+        setCameras(function(previous) {
+
+            return previous.filter(function(item) {
+                return item.id !== id;
+            });
+
+        });
+
+        if (
+            cameraMarkersRef.current[id] &&
+            mapRef.current
+        ) {
+
+            mapRef.current.removeLayer(
+                cameraMarkersRef.current[id]
+            );
+
+            delete cameraMarkersRef.current[id];
+        }
+
+        setSelectedCameraId(null);
+    }
+
+    function resetSightingForm() {
+
+        setDate("");
+        setTime("");
+        setDeerType("Buck");
+        setNumber("1");
+        setAntlerPoints("");
+        setEstimatedScore("");
+        setNotes("");
+    }
+
+    function addSighting(event) {
+
+        event.preventDefault();
+
+        if (!selectedCamera) return;
+
+        const sighting = {
+            id: Date.now(),
+            date: date,
+            time: time,
+            deerType: deerType,
+            number: Number(number) || 1,
+            antlerPoints:
+                antlerPoints === ""
+                    ? null
+                    : Number(antlerPoints),
+            estimatedScore:
+                estimatedScore === ""
+                    ? null
+                    : Number(estimatedScore),
+            notes: notes
+        };
+
+        setCameras(function(previous) {
+
+            return previous.map(function(camera) {
+
+                if (camera.id !== selectedCamera.id) {
+                    return camera;
+                }
+
+                return {
+                    ...camera,
+                    sightings: [
+                        ...camera.sightings,
+                        sighting
+                    ]
+                };
+            });
+
+        });
+
+        resetSightingForm();
+        setShowSightingForm(false);
+    }
+
+    function deleteSighting(id) {
+
+        if (!selectedCamera) return;
+
+        setCameras(function(previous) {
+
+            return previous.map(function(camera) {
+
+                if (camera.id !== selectedCamera.id) {
+                    return camera;
+                }
+
+                return {
+                    ...camera,
+                    sightings: camera.sightings.filter(
+                        function(sighting) {
+                            return sighting.id !== id;
+                        }
+                    )
+                };
+            });
+
+        });
+    }
+
+    function startTrail() {
+
+        setSelectedCameraId(null);
+        setShowSightingForm(false);
+
+        drawingTrailRef.current = true;
+        setDrawingTrail(true);
+        setCurrentTrailPoints([]);
+    }
+
+    function cancelTrail() {
+
+        drawingTrailRef.current = false;
+        setDrawingTrail(false);
+        setCurrentTrailPoints([]);
+
+        if (
+            currentTrailLayerRef.current &&
+            mapRef.current
+        ) {
+
+            mapRef.current.removeLayer(
+                currentTrailLayerRef.current
+            );
+
+            currentTrailLayerRef.current = null;
+        }
+    }
+
+    function finishTrail() {
+
+        if (currentTrailPoints.length < 2) {
+
+            alert(
+                "A trail needs at least two points."
+            );
+
+            return;
+        }
+
+        const name = prompt(
+            "Enter a name for this trail:"
+        );
+
+        if (!name) return;
+
+        const trail = {
+            id: Date.now(),
+            name: name,
+            points: currentTrailPoints
+        };
+
+        setTrails(function(previous) {
+            return [...previous, trail];
+        });
+
+        drawingTrailRef.current = false;
+        setDrawingTrail(false);
+        setCurrentTrailPoints([]);
+
+        if (
+            currentTrailLayerRef.current &&
+            mapRef.current
+        ) {
+
+            mapRef.current.removeLayer(
+                currentTrailLayerRef.current
+            );
+
+            currentTrailLayerRef.current = null;
+        }
+
+        drawSavedTrail(trail);
+    }
+
+    function deleteTrail(id) {
+
+        const confirmed = confirm(
+            "Delete this trail?"
+        );
+
+        if (!confirmed) return;
+
+        setTrails(function(previous) {
+
+            return previous.filter(function(trail) {
+                return trail.id !== id;
+            });
+
+        });
+
+        redrawAllTrails(
+            trails.filter(function(trail) {
+                return trail.id !== id;
+            })
+        );
+    }
+
+    function redrawAllTrails(list) {
+
+        if (!mapRef.current) return;
+
+        trailLayersRef.current.forEach(function(layer) {
+
+            mapRef.current.removeLayer(layer);
+
+        });
+
+        trailLayersRef.current = [];
+
+        list.forEach(function(trail) {
+
+            drawSavedTrail(trail);
+
+        });
+    }
+
+    function exportData() {
+
+        const data = {
+            app: "Deer Trail Cam Scorer",
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            cameras: cameras,
+            trails: trails
+        };
+
+        const json = JSON.stringify(
+            data,
+            null,
+            2
+        );
+
+        const blob = new Blob(
+            [json],
+            {
+                type: "application/json"
+            }
+        );
+
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+
+        link.href = url;
+
+        link.download =
+            "deer-trail-cam-backup-" +
+            new Date()
+                .toISOString()
+                .slice(0, 10) +
+            ".json";
+
+        document.body.appendChild(link);
+
+        link.click();
+
+        document.body.removeChild(link);
+
+        URL.revokeObjectURL(url);
+    }
+
+    function importData(event) {
+
+        const file = event.target.files[0];
+
+        if (!file) return;
+
+        const reader = new FileReader();
+
+        reader.onload = function(loadEvent) {
+
+            try {
+
+                const data = JSON.parse(
+                    loadEvent.target.result
+                );
+
+                if (
+                    !data ||
+                    !Array.isArray(data.cameras) ||
+                    !Array.isArray(data.trails)
+                ) {
+
+                    alert(
+                        "That file is not a valid Deer Trail Cam backup."
+                    );
+
+                    return;
+                }
+
+                const confirmed = confirm(
+                    "Import this backup? This will replace the data currently on this device."
+                );
+
+                if (!confirmed) return;
+
+                const importedCameras =
+                    data.cameras.map(function(camera) {
+
+                        return {
+                            id: camera.id,
+                            name: camera.name,
+                            lat: Number(camera.lat),
+                            lng: Number(camera.lng),
+                            sightings:
+                                Array.isArray(
+                                    camera.sightings
+                                )
+                                    ? camera.sightings
+                                    : []
+                        };
+
+                    });
+
+                const importedTrails =
+                    data.trails.map(function(trail) {
+
+                        return {
+                            id: trail.id,
+                            name: trail.name,
+                            points:
+                                Array.isArray(
+                                    trail.points
+                                )
+                                    ? trail.points
+                                    : []
+                        };
+
+                    });
+
+                localStorage.setItem(
+                    CAMERA_KEY,
+                    JSON.stringify(
+                        importedCameras
+                    )
+                );
+
+                localStorage.setItem(
+                    TRAIL_KEY,
+                    JSON.stringify(
+                        importedTrails
+                    )
+                );
+
+                setCameras(importedCameras);
+                setTrails(importedTrails);
+
+                setSelectedCameraId(null);
+                setShowSightingForm(false);
+
+                if (mapRef.current) {
+
+                    Object.values(
+                        cameraMarkersRef.current
+                    ).forEach(function(marker) {
+
+                        mapRef.current.removeLayer(
+                            marker
+                        );
+
+                    });
+
+                    cameraMarkersRef.current = {};
+
+                    redrawAllTrails([]);
+
+                    importedCameras.forEach(
+                        function(camera) {
+                            addCameraMarker(camera);
+                        }
+                    );
+
+                    importedTrails.forEach(
+                        function(trail) {
+                            drawSavedTrail(trail);
+                        }
+                    );
+                }
+
+                alert(
+                    "Backup imported successfully."
+                );
+
+            } catch {
+
+                alert(
+                    "Could not read that file."
+                );
+            }
+
+            event.target.value = "";
+
+        };
+
+        reader.readAsText(file);
+    }
+
+    const allSightings = [];
+
+    cameras.forEach(function(camera) {
+
+        camera.sightings.forEach(function(sighting) {
+
+            allSightings.push({
+                ...sighting,
+                cameraName: camera.name,
+                cameraId: camera.id
+            });
+
+        });
+
+    });
+
+    allSightings.sort(function(a, b) {
+
+        return new Date(
+            (b.date || "") +
+            "T" +
+            (b.time || "00:00")
+        ) -
+        new Date(
+            (a.date || "") +
+            "T" +
+            (a.time || "00:00")
+        );
+
+    });
+
+    const totalDeer =
+        allSightings.reduce(
+            function(total, sighting) {
+                return total +
+                    Number(sighting.number || 0);
+            },
+            0
+        );
+
+    const buckCount =
+        allSightings
+            .filter(function(s) {
+                return s.deerType === "Buck";
+            })
+            .reduce(function(total, s) {
+                return total +
+                    Number(s.number || 0);
+            }, 0);
+
+    const doeCount =
+        allSightings
+            .filter(function(s) {
+                return s.deerType === "Doe";
+            })
+            .reduce(function(total, s) {
+                return total +
+                    Number(s.number || 0);
+            }, 0);
+
+    const fawnCount =
+        allSightings
+            .filter(function(s) {
+                return s.deerType === "Fawn";
+            })
+            .reduce(function(total, s) {
+                return total +
+                    Number(s.number || 0);
+            }, 0);
+
+    const unknownCount =
+        allSightings
+            .filter(function(s) {
+                return s.deerType === "Unknown";
+            })
+            .reduce(function(total, s) {
+                return total +
+                    Number(s.number || 0);
+            }, 0);
+
+    const scoredBucks =
+        allSightings.filter(function(s) {
+
+            return s.deerType === "Buck" &&
+                Number(s.estimatedScore) > 0;
+
+        });
+
+    const highestScore =
+        scoredBucks.length
+            ? Math.max.apply(
+                null,
+                scoredBucks.map(function(s) {
+                    return Number(
+                        s.estimatedScore
+                    );
+                })
+            )
+            : 0;
+
+    const averageScore =
+        scoredBucks.length
+            ? Math.round(
+                scoredBucks.reduce(
+                    function(total, s) {
+                        return total +
+                            Number(
+                                s.estimatedScore
+                            );
+                    },
+                    0
+                ) /
+                scoredBucks.length
+            )
+            : 0;
+
+    const cameraActivity =
+        cameras.map(function(camera) {
+
+            return {
+                name: camera.name,
+                count:
+                    camera.sightings.reduce(
+                        function(total, sighting) {
+                            return total +
+                                Number(
+                                    sighting.number || 0
+                                );
+                        },
+                        0
+                    )
+            };
+
+        }).sort(function(a, b) {
+            return b.count - a.count;
+        });
+
+    const timeActivity = {
+        "12 AM - 5 AM": 0,
+        "5 AM - 9 AM": 0,
+        "9 AM - 3 PM": 0,
+        "3 PM - 7 PM": 0,
+        "7 PM - 12 AM": 0
+    };
+
+    allSightings.forEach(function(sighting) {
+
+        if (!sighting.time) return;
+
+        const hour =
+            Number(
+                sighting.time.split(":")[0]
+            );
+
+        const amount =
+            Number(
+                sighting.number || 0
+            );
+
+        if (hour < 5) {
+            timeActivity["12 AM - 5 AM"] += amount;
+        } else if (hour < 9) {
+            timeActivity["5 AM - 9 AM"] += amount;
+        } else if (hour < 15) {
+            timeActivity["9 AM - 3 PM"] += amount;
+        } else if (hour < 19) {
+            timeActivity["3 PM - 7 PM"] += amount;
+        } else {
+            timeActivity["7 PM - 12 AM"] += amount;
+        }
+
+    });
+
+    function bar(label, value, maximum) {
+
+        const width =
+            maximum > 0
+                ? Math.max(
+                    2,
+                    value / maximum * 100
+                )
+                : 0;
+
+        return e(
+            "div",
+            {
+                className: "bar-row",
+                key: label
+            },
+
+            e(
+                "div",
+                {
+                    className: "bar-header"
+                },
+
+                e("span", null, label),
+                e("strong", null, value)
+            ),
+
+            e(
+                "div",
+                {
+                    className: "bar-background"
+                },
+
+                e(
+                    "div",
+                    {
+                        className: "bar",
+                        style: {
+                            width: width + "%"
+                        }
+                    }
+                )
+            )
+        );
+    }
+
+    function Dashboard() {
+
+        const maxType = Math.max(
+            buckCount,
+            doeCount,
+            fawnCount,
+            unknownCount,
+            1
+        );
+
+        const maxTime = Math.max(
+            ...Object.values(timeActivity),
+            1
+        );
+
+        const maxCamera = Math.max(
+            ...cameraActivity.map(function(c) {
+                return c.count;
+            }),
+            1
+        );
+
+        return e(
+            "div",
+            {
+                className: "dashboard"
+            },
+
+            e(
+                "div",
+                {
+                    className: "dashboard-inner"
+                },
+
+                e(
+                    "div",
+                    {
+                        className: "dashboard-title"
+                    },
+
+                    e("h2", null, "Hunting Dashboard"),
+
+                    e(
+                        "p",
+                        null,
+                        "Overview of your trail camera data"
+                    )
+                ),
+
+                e(
+                    "div",
+                    {
+                        className: "stats"
+                    },
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Total Deer Seen"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value"
+                            },
+                            totalDeer
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            allSightings.length +
+                            " sightings"
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Buck Sightings"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value"
+                            },
+                            buckCount
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            "Recorded bucks"
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Highest Estimated Buck"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value"
+                            },
+                            highestScore
+                                ? highestScore + '"'
+                                : "—"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            "Estimated score"
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Average Buck Score"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value"
+                            },
+                            averageScore
+                                ? averageScore + '"'
+                                : "—"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            scoredBucks.length +
+                            " scored sightings"
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Trail Cameras"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value"
+                            },
+                            cameras.length
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Deer Trails"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value"
+                            },
+                            trails.length
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Most Active Camera"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value",
+                                style: {
+                                    fontSize: "19px"
+                                }
+                            },
+                            cameraActivity.length &&
+                            cameraActivity[0].count
+                                ? cameraActivity[0].name
+                                : "—"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            cameraActivity.length &&
+                            cameraActivity[0].count
+                                ? cameraActivity[0].count +
+                                  " deer"
+                                : ""
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
+                            "Latest Sighting"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value",
+                                style: {
+                                    fontSize: "18px"
+                                }
+                            },
+                            allSightings.length
+                                ? allSightings[0].date
+                                : "—"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            allSightings.length
+                                ? allSightings[0].cameraName
+                                : ""
+                        )
+                    )
+                ),
+
+                e(
+                    "div",
+                    {
+                        className: "dashboard-grid"
+                    },
+
+                    e(
+                        "div",
+                        {
+                            className: "dashboard-card"
+                        },
+
+                        e(
+                            "h3",
+                            null,
+                            "Deer Type"
+                        ),
+
+                        bar(
+                            "Buck",
+                            buckCount,
+                            maxType
+                        ),
+
+                        bar(
+                            "Doe",
+                            doeCount,
+                            maxType
+                        ),
+
+                        bar(
+                            "Fawn",
+                            fawnCount,
+                            maxType
+                        ),
+
+                        bar(
+                            "Unknown",
+                            unknownCount,
+                            maxType
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "dashboard-card"
+                        },
+
+                        e(
+                            "h3",
+                            null,
+                            "Activity by Time"
+                        ),
+
+                        Object.keys(timeActivity).map(
+                            function(label) {
+                                return bar(
+                                    label,
+                                    timeActivity[label],
+                                    maxTime
+                                );
+                            }
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "dashboard-card"
+                        },
+
+                        e(
+                            "h3",
+                            null,
+                            "Camera Activity"
+                        ),
+
+                        cameraActivity.length
+                            ? cameraActivity.map(
+                                function(camera) {
+                                    return bar(
+                                        camera.name,
+                                        camera.count,
+                                        maxCamera
+                                    );
+                                }
+                            )
+                            : e(
+                                "div",
+                                {
+                                    className: "empty"
+                                },
+                                "No cameras yet."
+                            )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "dashboard-card"
+                        },
+
+                        e(
+                            "h3",
+                            null,
+                            "Recent Sightings"
+                        ),
+
+                        allSightings.length
+                            ? allSightings
+                                .slice(0, 8)
+                                .map(
+                                    function(sighting) {
+
+                                        return e(
+                                            "div",
+                                            {
+                                                className:
+                                                    "recent-item",
+                                                key:
+                                                    sighting.id
+                                            },
+
+                                            e(
+                                                "strong",
+                                                null,
+
+                                                sighting.number +
+                                                " " +
+                                                sighting.deerType +
+                                                " — " +
+                                                sighting.cameraName
+                                            ),
+
+                                            e(
+                                                "span",
+                                                null,
+
+                                                sighting.date +
+                                                " " +
+                                                sighting.time
+                                            ),
+
+                                            sighting.notes
+                                                ? e(
+                                                    "div",
+                                                    {
+                                                        style: {
+                                                            marginTop:
+                                                                "5px",
+                                                            fontSize:
+                                                                "13px"
+                                                        }
+                                                    },
+                                                    sighting.notes
+                                                )
+                                                : null
+                                        );
+
+                                    }
+                                )
+                            : e(
+                                "div",
+                                {
+                                    className: "empty"
+                                },
+                                "No sightings yet."
+                            )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className:
+                                "dashboard-card wide"
+                        },
+
+                        e(
+                            "h3",
+                            null,
+                            "All Sightings"
+                        ),
+
+                        allSightings.length
+                            ? e(
+                                "div",
+                                {
+                                    className:
+                                        "table-wrapper"
+                                },
+
+                                e(
+                                    "table",
+                                    null,
+
+                                    e(
+                                        "thead",
+                                        null,
+
+                                        e(
+                                            "tr",
+                                            null,
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Date"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Time"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Camera"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Type"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Number"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Points"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Score"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
+                                                "Notes"
+                                            )
+                                        )
+                                    ),
+
+                                    e(
+                                        "tbody",
+                                        null,
+
+                                        allSightings.map(
+                                            function(sighting) {
+
+                                                return e(
+                                                    "tr",
+                                                    {
+                                                        key:
+                                                            sighting.id
+                                                    },
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.date
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.time
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.cameraName
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.deerType
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.number
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.antlerPoints ||
+                                                        "—"
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.estimatedScore
+                                                            ? sighting.estimatedScore +
+                                                              '"'
+                                                            : "—"
+                                                    ),
+
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.notes || "—"
+                                                    )
+                                                );
+
+                                            }
+                                        )
+                                    )
+                                )
+                            )
+                            : e(
+                                "div",
+                                {
+                                    className: "empty"
+                                },
+                                "No sightings yet."
+                            )
+                    )
+                )
+            )
+        );
+    }
+
+    function CameraPanel() {
+
+        if (!selectedCamera) {
+
+            return e(
+                React.Fragment,
+                null,
+
+                e(
+                    "div",
+                    {
+                        className: "section"
+                    },
+
+                    e(
+                        "h2",
+                        null,
+                        "Trail Cameras"
+                    ),
+
+                    e(
+                        "p",
+                        {
+                            className: "empty"
+                        },
+                        "Click the map to add a camera."
+                    )
+                ),
+
+                e(
+                    "div",
+                    {
+                        className: "section"
+                    },
+
+                    cameras.length
+                        ? cameras.map(
+                            function(camera) {
+
+                                return e(
+                                    "div",
+                                    {
+                                        className: "card",
+                                        key: camera.id
+                                    },
+
+                                    e(
+                                        "h3",
+                                        null,
+                                        camera.name
+                                    ),
+
+                                    e(
+                                        "p",
+                                        null,
+                                        camera.lat.toFixed(6) +
+                                        ", " +
+                                        camera.lng.toFixed(6)
+                                    ),
+
+                                    e(
+                                        "p",
+                                        null,
+                                        camera.sightings.length +
+                                        " sightings"
+                                    ),
+
+                                    e(
+                                        "div",
+                                        {
+                                            className:
+                                                "form-buttons"
+                                        },
+
+                                        e(
+                                            "button",
+                                            {
+                                                className:
+                                                    "primary",
+                                                onClick:
+                                                    function() {
+                                                        openCamera(
+                                                            camera
+                                                        );
+                                                    }
+                                            },
+                                            "Open"
+                                        ),
+
+                                        e(
+                                            "button",
+                                            {
+                                                className:
+                                                    "danger",
+                                                onClick:
+                                                    function() {
+                                                        deleteCamera(
+                                                            camera.id
+                                                        );
+                                                    }
+                                            },
+                                            "Delete"
+                                        )
+                                    )
+                                );
+
+                            }
+                        )
+                        : e(
+                            "div",
+                            {
+                                className: "empty"
+                            },
+                            "No cameras yet."
+                        )
+                ),
+
+                e(
+                    "div",
+                    {
+                        className: "section"
+                    },
+
+                    e(
+                        "h2",
+                        null,
+                        "Deer Trails"
+                    ),
+
+                    drawingTrail
+                        ? e(
+                            React.Fragment,
+                            null,
+
+                            e(
+                                "div",
+                                {
+                                    className: "drawing"
+                                },
+                                "Click points on the map to draw the trail."
+                            ),
+
+                            e(
+                                "button",
+                                {
+                                    className:
+                                        "finish-button",
+                                    onClick:
+                                        finishTrail
+                                },
+                                "Finish Trail"
+                            ),
+
+                            e(
+                                "button",
+                                {
+                                    className:
+                                        "cancel-button",
+                                    onClick:
+                                        cancelTrail
+                                },
+                                "Cancel"
+                            )
+                        )
+                        : e(
+                            "button",
+                            {
+                                className:
+                                    "trail-button",
+                                onClick:
+                                    startTrail
+                            },
+                            "+ Add Deer Trail"
+                        ),
+
+                    trails.length
+                        ? trails.map(
+                            function(trail) {
+
+                                return e(
+                                    "div",
+                                    {
+                                        className:
+                                            "card",
+                                        key:
+                                            trail.id
+                                    },
+
+                                    e(
+                                        "h3",
+                                        null,
+                                        trail.name
+                                    ),
+
+                                    e(
+                                        "p",
+                                        null,
+                                        trail.points.length +
+                                        " points"
+                                    ),
+
+                                    e(
+                                        "button",
+                                        {
+                                            className:
+                                                "danger",
+                                            onClick:
+                                                function() {
+                                                    deleteTrail(
+                                                        trail.id
+                                                    );
+                                                }
+                                        },
+                                        "Delete"
+                                    )
+                                );
+
+                            }
+                        )
+                        : e(
+                            "div",
+                            {
+                                className: "empty"
+                            },
+                            "No trails yet."
+                        )
+                )
+            );
+        }
+
+        return e(
+            React.Fragment,
+            null,
+
+            e(
+                "button",
+                {
+                    className: "secondary",
+                    onClick: function() {
+                        setSelectedCameraId(null);
+                        setShowSightingForm(false);
+                    }
+                },
+                "← Back"
+            ),
+
+            e(
+                "div",
+                {
+                    className: "card"
+                },
+
+                e(
+                    "h2",
+                    null,
+                    selectedCamera.name
+                ),
+
+                e(
+                    "p",
+                    null,
+                    selectedCamera.lat.toFixed(6) +
+                    ", " +
+                    selectedCamera.lng.toFixed(6)
+                ),
+
+                e(
+                    "p",
+                    null,
+                    selectedCamera.sightings.length +
+                    " sightings"
+                ),
+
+                e(
+                    "button",
+                    {
+                        className:
+                            "primary",
+                        style: {
+                            width: "100%",
+                            marginTop: "10px"
+                        },
+                        onClick:
+                            function() {
+                                setShowSightingForm(
+                                    !showSightingForm
+                                );
+                            }
+                    },
+                    showSightingForm
+                        ? "Cancel"
+                        : "+ Add Sighting"
+                )
+            ),
+
+            showSightingForm
+                ? e(
+                    "div",
+                    {
+                        className: "card"
+                    },
+
+                    e(
+                        "h3",
+                        null,
+                        "New Sighting"
+                    ),
+
+                    e(
+                        "form",
+                        {
+                            onSubmit:
+                                addSighting
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className:
+                                    "form-group"
+                            },
+
+                            e(
+                                "label",
+                                null,
+                                "Date"
+                            ),
+
+                            e(
+                                "input",
+                                {
+                                    type: "date",
+                                    value: date,
+                                    onChange:
+                                        function(event) {
+                                            setDate(
+                                                event.target.value
+                                            );
+                                        },
+                                    required: true
+                                }
+                            )
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className:
+                                    "form-group"
+                            },
+
+                            e(
+                                "label",
+                                null,
+                                "Time"
+                            ),
+
+                            e(
+                                "input",
+                                {
+                                    type: "time",
+                                    value: time,
+                                    onChange:
+                                        function(event) {
+                                            setTime(
+                                                event.target.value
+                                            );
+                                        },
+                                    required: true
+                                }
+                            )
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className:
+                                    "form-group"
+                            },
+
+                            e(
+                                "label",
+                                null,
+                                "Deer Type"
+                            ),
+
+                            e(
+                                "select",
+                                {
+                                    value:
+                                        deerType,
+                                    onChange:
+                                        function(event) {
+                                            setDeerType(
+                                                event.target.value
+                                            );
+                                        }
+                                },
+
+                                e(
+                                    "option",
+                                    null,
+                                    "Buck"
+                                ),
+
+                                e(
+                                    "option",
+                                    null,
+                                    "Doe"
+                                ),
+
+                                e(
+                                    "option",
+                                    null,
+                                    "Fawn"
+                                ),
+
+                                e(
+                                    "option",
+                                    null,
+                                    "Unknown"
+                                )
+                            )
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className:
+                                    "form-group"
+                            },
+
+                            e(
+                                "label",
+                                null,
+                                "Number of Deer"
+                            ),
+
+                            e(
+                                "input",
+                                {
+                                    type: "number",
+                                    min: "1",
+                                    value: number,
+                                    onChange:
+                                        function(event) {
+                                            setNumber(
+                                                event.target.value
+                                            );
+                                        },
+                                    required: true
+                                }
+                            )
+                        ),
+
+                        deerType === "Buck"
+                            ? e(
+                                React.Fragment,
+                                null,
+
+                                e(
+                                    "div",
+                                    {
+                                        className:
+                                            "form-group"
+                                    },
+
+                                    e(
+                                        "label",
+                                        null,
+                                        "Antler Points"
+                                    ),
+
+                                    e(
+                                        "input",
+                                        {
+                                            type: "number",
+                                            min: "0",
+                                            value:
+                                                antlerPoints,
+                                            onChange:
+                                                function(event) {
+                                                    setAntlerPoints(
+                                                        event.target.value
+                                                    );
+                                                }
+                                        }
+                                    )
+                                ),
+
+                                e(
+                                    "div",
+                                    {
+                                        className:
+                                            "form-group"
+                                    },
+
+                                    e(
+                                        "label",
+                                        null,
+                                        "Estimated Score"
+                                    ),
+
+                                    e(
+                                        "input",
+                                        {
+                                            type: "number",
+                                            min: "0",
+                                            value:
+                                                estimatedScore,
+                                            onChange:
+                                                function(event) {
+                                                    setEstimatedScore(
+                                                        event.target.value
+                                                    );
+                                                }
+                                        }
+                                    )
+                                )
+                            )
+                            : null,
+
+                        e(
+                            "div",
+                            {
+                                className:
+                                    "form-group"
+                            },
+
+                            e(
+                                "label",
+                                null,
+                                "Notes"
+                            ),
+
+                            e(
+                                "textarea",
+                                {
+                                    value: notes,
+                                    onChange:
+                                        function(event) {
+                                            setNotes(
+                                                event.target.value
+                                            );
+                                        }
+                                }
+                            )
+                        ),
+
+                        e(
+                            "button",
+                            {
+                                className:
+                                    "primary",
+                                type: "submit",
+                                style: {
+                                    width: "100%"
+                                }
+                            },
+                            "Save Sighting"
+                        )
+                    )
+                )
+                : null,
+
+            e(
+                "div",
+                {
+                    className: "card"
+                },
+
+                e(
+                    "h3",
+                    null,
+                    "Sightings"
+                ),
+
+                selectedCamera.sightings.length
+                    ? selectedCamera.sightings
+                        .slice()
+                        .reverse()
+                        .map(
+                            function(sighting) {
+
+                                return e(
+                                    "div",
+                                    {
+                                        className:
+                                            "sighting",
+                                        key:
+                                            sighting.id
+                                    },
+
+                                    e(
+                                        "strong",
+                                        null,
+
+                                        sighting.number +
+                                        " " +
+                                        sighting.deerType
+                                    ),
+
+                                    e(
+                                        "small",
+                                        null,
+
+                                        sighting.date +
+                                        " at " +
+                                        sighting.time
+                                    ),
+
+                                    sighting.antlerPoints
+                                        ? e(
+                                            "p",
+                                            null,
+                                            sighting.antlerPoints +
+                                            " antler points"
+                                        )
+                                        : null,
+
+                                    sighting.estimatedScore
+                                        ? e(
+                                            "p",
+                                            null,
+                                            "Estimated score: " +
+                                            sighting.estimatedScore +
+                                            '"'
+                                        )
+                                        : null,
+
+                                    sighting.notes
+                                        ? e(
+                                            "p",
+                                            null,
+                                            sighting.notes
+                                        )
+                                        : null,
+
+                                    e(
+                                        "button",
+                                        {
+                                            className:
+                                                "danger",
+                                            onClick:
+                                                function() {
+                                                    deleteSighting(
+                                                        sighting.id
+                                                    );
+                                                }
+                                        },
+                                        "Delete"
+                                    )
+                                );
+
+                            }
+                        )
+                    : e(
+                        "div",
+                        {
+                            className: "empty"
+                        },
+                        "No sightings recorded."
+                    )
+            )
+        );
+    }
+
+    return e(
+        React.Fragment,
+        null,
+
+        e(
+            "header",
+            null,
+
+            e(
+                "h1",
+                null,
+                "Deer Trail Cam Scorer"
+            ),
+
+            e(
+                "div",
+                {
+                    className:
+                        "header-buttons"
+                },
+
+                e(
+                    "button",
+                    {
+                        className:
+                            "header-button",
+                        onClick:
+                            exportData
+                    },
+                    "Export Data"
+                ),
+
+                e(
+                    "label",
+                    {
+                        className:
+                            "header-button",
+                        style: {
+                            padding:
+                                "9px 12px",
+                            borderRadius:
+                                "6px",
+                            cursor:
+                                "pointer",
+                            fontSize:
+                                "14px"
+                        }
+                    },
+
+                    "Import Data",
+
+                    e(
+                        "input",
+                        {
+                            className:
+                                "file-input",
+                            type: "file",
+                            accept:
+                                ".json",
+                            onChange:
+                                importData
+                        }
+                    )
+                )
+            )
+        ),
+
+        e(
+            "div",
+            {
+                className: "nav"
+            },
+
+            e(
+                "button",
+                {
+                    className:
+                        view === "dashboard"
+                            ? "active"
+                            : "",
+                    onClick:
+                        function() {
+                            setView(
+                                "dashboard"
+                            );
+                        }
+                },
+                "Dashboard"
+            ),
+
+            e(
+                "button",
+                {
+                    className:
+                        view === "map"
+                            ? "active"
+                            : "",
+                    onClick:
+                        function() {
+                            setView("map");
+                        }
+                },
+                "Map"
+            )
+        ),
+
+        view === "dashboard"
+            ? e(
+                Dashboard
+            )
+            : e(
+                "div",
+                {
+                    className: "app"
+                },
+
+                e(
+                    "div",
+                    {
+                        className:
+                            "sidebar"
+                    },
+
+                    CameraPanel()
+                ),
+
+                e(
+                    "div",
+                    {
+                        id: "map"
+                    }
+                )
+            )
+    );
+}
+
+const root = ReactDOM.createRoot(
+    document.getElementById("root")
+);
+
+root.render(
+    e(App)
+);
+
+</script>
+
+</body>
+</html>
