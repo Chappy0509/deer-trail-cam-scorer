@@ -1,0 +1,1 @@
+# deer-trail-cam-scorer
