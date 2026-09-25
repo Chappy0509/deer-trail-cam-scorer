@@ -445,6 +445,7 @@ th {
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://accounts.google.com/gsi/client"></script>
 
 <script>
 
@@ -511,6 +512,168 @@ function saveData(cameras, trails) {
     );
 }
 
+// ---- Google Drive sync ----
+// 1. Create a free Google Cloud project, enable the "Google Drive API",
+//    set up an OAuth consent screen (External, Testing mode is fine),
+//    add yourself as a test user, and create an OAuth Client ID
+//    (Application type: Web application) with this site's URL added
+//    under "Authorized JavaScript origins".
+// 2. Paste that Client ID below.
+const GOOGLE_CLIENT_ID = "228534729672-7i893upvnrnvkgj8dncsidvs6cbjgc6d.apps.googleusercontent.com";
+
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
+const DRIVE_FILE_NAME = "deer-trail-cam-data.json";
+const LAST_MODIFIED_KEY = "deerLastModified";
+
+let driveTokenClient = null;
+let driveAccessToken = null;
+let driveFileId = null;
+
+function getLastModified() {
+    return Number(localStorage.getItem(LAST_MODIFIED_KEY)) || 0;
+}
+
+function setLastModified(timestamp) {
+    localStorage.setItem(LAST_MODIFIED_KEY, String(timestamp));
+}
+
+function initDriveTokenClient(callback) {
+
+    if (!window.google || !window.google.accounts) {
+        return false;
+    }
+
+    driveTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: callback
+    });
+
+    return true;
+}
+
+function requestDriveAccess(callback) {
+
+    if (!driveTokenClient) return;
+
+    driveTokenClient.callback = function(response) {
+
+        if (response && response.access_token) {
+            driveAccessToken = response.access_token;
+        }
+
+        callback(response);
+    };
+
+    driveTokenClient.requestAccessToken({
+        prompt: driveAccessToken ? "" : "consent"
+    });
+}
+
+function driveSignOut() {
+
+    if (driveAccessToken && window.google) {
+        google.accounts.oauth2.revoke(driveAccessToken, function() {});
+    }
+
+    driveAccessToken = null;
+    driveFileId = null;
+}
+
+async function driveFindFile() {
+
+    const query = "name='" + DRIVE_FILE_NAME + "' and trashed=false";
+
+    const url =
+        "https://www.googleapis.com/drive/v3/files" +
+        "?spaces=appDataFolder" +
+        "&fields=" + encodeURIComponent("files(id,modifiedTime)") +
+        "&q=" + encodeURIComponent(query);
+
+    const response = await fetch(url, {
+        headers: {
+            Authorization: "Bearer " + driveAccessToken
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error("Drive lookup failed");
+    }
+
+    const data = await response.json();
+
+    if (data.files && data.files.length) {
+        return data.files[0];
+    }
+
+    return null;
+}
+
+async function driveDownload(fileId) {
+
+    const response = await fetch(
+        "https://www.googleapis.com/drive/v3/files/" +
+        fileId +
+        "?alt=media",
+        {
+            headers: {
+                Authorization: "Bearer " + driveAccessToken
+            }
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error("Drive download failed");
+    }
+
+    return response.json();
+}
+
+async function driveUpload(fileId, dataObj) {
+
+    const metadata = {
+        name: DRIVE_FILE_NAME,
+        mimeType: "application/json"
+    };
+
+    if (!fileId) {
+        metadata.parents = ["appDataFolder"];
+    }
+
+    const boundary = "deercamboundary";
+
+    const body =
+        "--" + boundary + "\r\n" +
+        "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
+        JSON.stringify(metadata) + "\r\n" +
+        "--" + boundary + "\r\n" +
+        "Content-Type: application/json\r\n\r\n" +
+        JSON.stringify(dataObj) + "\r\n" +
+        "--" + boundary + "--";
+
+    const url = fileId
+        ? "https://www.googleapis.com/upload/drive/v3/files/" +
+          fileId +
+          "?uploadType=multipart"
+        : "https://www.googleapis.com/upload/drive/v3/files" +
+          "?uploadType=multipart";
+
+    const response = await fetch(url, {
+        method: fileId ? "PATCH" : "POST",
+        headers: {
+            Authorization: "Bearer " + driveAccessToken,
+            "Content-Type": "multipart/related; boundary=" + boundary
+        },
+        body: body
+    });
+
+    if (!response.ok) {
+        throw new Error("Drive upload failed");
+    }
+
+    return response.json();
+}
+
 function App() {
 
     const [view, setView] = useState("dashboard");
@@ -538,15 +701,186 @@ function App() {
     const [estimatedScore, setEstimatedScore] = useState("");
     const [notes, setNotes] = useState("");
 
+    const [signedIn, setSignedIn] = useState(false);
+    const [syncStatus, setSyncStatus] = useState("");
+
     const mapRef = useRef(null);
     const cameraMarkersRef = useRef({});
     const trailLayersRef = useRef([]);
     const currentTrailLayerRef = useRef(null);
     const drawingTrailRef = useRef(false);
 
+    const driveSyncTimeoutRef = useRef(null);
+    const suppressNextPushRef = useRef(false);
+    const signedInRef = useRef(false);
+
+    useEffect(function() {
+        signedInRef.current = signedIn;
+    }, [signedIn]);
+
+    async function pushToDrive() {
+
+        setSyncStatus("syncing");
+
+        try {
+
+            const timestamp = Date.now();
+
+            const payload = {
+                app: "Deer Trail Cam Scorer",
+                version: 1,
+                lastModified: timestamp,
+                cameras: cameras,
+                trails: trails
+            };
+
+            const result = await driveUpload(
+                driveFileId,
+                payload
+            );
+
+            if (result && result.id) {
+                driveFileId = result.id;
+            }
+
+            setLastModified(timestamp);
+            setSyncStatus("synced");
+
+        } catch (error) {
+            setSyncStatus("error");
+        }
+    }
+
+    async function pullFromDrive(file) {
+
+        try {
+
+            const driveData = await driveDownload(file.id);
+
+            if (
+                driveData &&
+                Array.isArray(driveData.cameras) &&
+                Array.isArray(driveData.trails)
+            ) {
+
+                suppressNextPushRef.current = true;
+
+                setCameras(driveData.cameras);
+                setTrails(driveData.trails);
+
+                setLastModified(
+                    new Date(file.modifiedTime).getTime()
+                );
+            }
+
+        } catch (error) {
+            setSyncStatus("error");
+        }
+    }
+
+    async function syncFromDrive() {
+
+        setSyncStatus("syncing");
+
+        try {
+
+            const file = await driveFindFile();
+
+            if (file) {
+
+                driveFileId = file.id;
+
+                const driveModified =
+                    new Date(file.modifiedTime).getTime();
+
+                const localModified = getLastModified();
+
+                if (driveModified > localModified) {
+
+                    const confirmed = confirm(
+                        "Cloud data is newer than what's on this device. Load it? This will replace what's currently shown here."
+                    );
+
+                    if (confirmed) {
+                        await pullFromDrive(file);
+                    } else {
+                        await pushToDrive();
+                    }
+
+                } else if (localModified > driveModified) {
+
+                    await pushToDrive();
+                }
+
+            } else {
+
+                await pushToDrive();
+            }
+
+            setSyncStatus("synced");
+
+        } catch (error) {
+            setSyncStatus("error");
+        }
+    }
+
+    function handleDriveAuthResponse(response) {
+
+        if (response && response.access_token) {
+            setSignedIn(true);
+            syncFromDrive();
+        } else if (response && response.error) {
+            setSyncStatus("error");
+        }
+    }
+
+    function signInToDrive() {
+        requestDriveAccess(handleDriveAuthResponse);
+    }
+
+    function signOutOfDrive() {
+        driveSignOut();
+        setSignedIn(false);
+        setSyncStatus("");
+    }
+
+    useEffect(function() {
+
+        const interval = setInterval(function() {
+
+            if (initDriveTokenClient(handleDriveAuthResponse)) {
+                clearInterval(interval);
+            }
+
+        }, 200);
+
+        return function() {
+            clearInterval(interval);
+        };
+
+    }, []);
+
     useEffect(function() {
 
         saveData(cameras, trails);
+
+        if (suppressNextPushRef.current) {
+            suppressNextPushRef.current = false;
+            return;
+        }
+
+        setLastModified(Date.now());
+
+        if (signedInRef.current) {
+
+            if (driveSyncTimeoutRef.current) {
+                clearTimeout(driveSyncTimeoutRef.current);
+            }
+
+            driveSyncTimeoutRef.current = setTimeout(function() {
+                pushToDrive();
+            }, 2000);
+        }
 
     }, [cameras, trails]);
 
@@ -2712,6 +3046,39 @@ function App() {
                     className:
                         "header-buttons"
                 },
+
+                e(
+                    "button",
+                    {
+                        className:
+                            "header-button",
+                        onClick:
+                            signedIn
+                                ? signOutOfDrive
+                                : signInToDrive
+                    },
+                    signedIn
+                        ? "Disconnect Drive"
+                        : "Connect Google Drive"
+                ),
+
+                signedIn
+                    ? e(
+                        "span",
+                        {
+                            style: {
+                                color: "white",
+                                fontSize: "12px",
+                                alignSelf: "center"
+                            }
+                        },
+                        syncStatus === "syncing"
+                            ? "Syncing…"
+                            : syncStatus === "error"
+                                ? "Sync error"
+                                : "Synced"
+                    )
+                    : null,
 
                 e(
                     "button",
