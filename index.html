@@ -445,6 +445,7 @@ th {
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <script src="https://accounts.google.com/gsi/client"></script>
 
 <script>
@@ -456,6 +457,40 @@ const useRef = React.useRef;
 
 const CAMERA_KEY = "deerCameras";
 const TRAIL_KEY = "deerTrails";
+const COLORS_KEY = "deerMapColors";
+
+const DEFAULT_COLORS = {
+    camera: "#ff0000",
+    cameraOutline: "#ffffff",
+    trail: "#ffff00"
+};
+
+function getColors() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(COLORS_KEY));
+        return { ...DEFAULT_COLORS, ...(saved || {}) };
+    } catch {
+        return { ...DEFAULT_COLORS };
+    }
+}
+
+const DIRECTIONS = [
+    { value: "N", label: "North", arrow: "↑" },
+    { value: "NE", label: "Northeast", arrow: "↗" },
+    { value: "E", label: "East", arrow: "→" },
+    { value: "SE", label: "Southeast", arrow: "↘" },
+    { value: "S", label: "South", arrow: "↓" },
+    { value: "SW", label: "Southwest", arrow: "↙" },
+    { value: "W", label: "West", arrow: "←" },
+    { value: "NW", label: "Northwest", arrow: "↖" }
+];
+
+function directionText(value) {
+    const found = DIRECTIONS.find(function(d) {
+        return d.value === value;
+    });
+    return found ? found.arrow + " " + found.label : "";
+}
 
 function getCameras() {
     try {
@@ -519,7 +554,7 @@ function saveData(cameras, trails) {
 //    (Application type: Web application) with this site's URL added
 //    under "Authorized JavaScript origins".
 // 2. Paste that Client ID below.
-const GOOGLE_CLIENT_ID = "228534729672-7i893upvnrnvkgj8dncsidvs6cbjgc6d.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID_HERE.apps.googleusercontent.com";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE_FILE_NAME = "deer-trail-cam-data.json";
@@ -698,8 +733,13 @@ function App() {
     const [deerType, setDeerType] = useState("Buck");
     const [number, setNumber] = useState("1");
     const [antlerPoints, setAntlerPoints] = useState("");
-    const [estimatedScore, setEstimatedScore] = useState("");
+    const [direction, setDirection] = useState("");
     const [notes, setNotes] = useState("");
+
+    const [colors, setColors] = useState(getColors);
+    const [heatOn, setHeatOn] = useState(false);
+    const [heatFilter, setHeatFilter] = useState("All");
+    const [mapVersion, setMapVersion] = useState(0);
 
     const [signedIn, setSignedIn] = useState(false);
     const [syncStatus, setSyncStatus] = useState("");
@@ -709,6 +749,9 @@ function App() {
     const trailLayersRef = useRef([]);
     const currentTrailLayerRef = useRef(null);
     const drawingTrailRef = useRef(false);
+    const heatLayerRef = useRef(null);
+    const colorsRef = useRef(colors);
+    colorsRef.current = colors;
 
     const driveSyncTimeoutRef = useRef(null);
     const suppressNextPushRef = useRef(false);
@@ -890,6 +933,22 @@ function App() {
 
     function initializeMap() {
 
+        if (
+            mapRef.current &&
+            mapRef.current.getContainer() !==
+                document.getElementById("map")
+        ) {
+            try {
+                mapRef.current.remove();
+            } catch (error) {}
+
+            mapRef.current = null;
+            cameraMarkersRef.current = {};
+            trailLayersRef.current = [];
+            currentTrailLayerRef.current = null;
+            heatLayerRef.current = null;
+        }
+
         if (mapRef.current) {
             setTimeout(function() {
                 mapRef.current.invalidateSize();
@@ -903,6 +962,7 @@ function App() {
         );
 
         mapRef.current = map;
+        setMapVersion(function(v) { return v + 1; });
 
         L.tileLayer(
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -985,9 +1045,9 @@ function App() {
             [camera.lat, camera.lng],
             {
                 radius: 7,
-                color: "white",
+                color: colorsRef.current.cameraOutline,
                 weight: 2,
-                fillColor: "red",
+                fillColor: colorsRef.current.camera,
                 fillOpacity: 1
             }
         ).addTo(mapRef.current);
@@ -1015,7 +1075,7 @@ function App() {
         const line = L.polyline(
             trail.points,
             {
-                color: "yellow",
+                color: colorsRef.current.trail,
                 weight: 5,
                 opacity: 0.9
             }
@@ -1043,7 +1103,7 @@ function App() {
                 L.polyline(
                     currentTrailPoints,
                     {
-                        color: "yellow",
+                        color: colorsRef.current.trail,
                         weight: 5,
                         opacity: 0.9
                     }
@@ -1051,6 +1111,82 @@ function App() {
         }
 
     }, [currentTrailPoints]);
+
+    useEffect(function() {
+
+        localStorage.setItem(
+            COLORS_KEY,
+            JSON.stringify(colors)
+        );
+
+        Object.values(cameraMarkersRef.current).forEach(
+            function(marker) {
+                marker.setStyle({
+                    fillColor: colors.camera,
+                    color: colors.cameraOutline
+                });
+            }
+        );
+
+        trailLayersRef.current.forEach(function(layer) {
+            layer.setStyle({ color: colors.trail });
+        });
+
+        if (currentTrailLayerRef.current) {
+            currentTrailLayerRef.current.setStyle({
+                color: colors.trail
+            });
+        }
+
+    }, [colors]);
+
+    useEffect(function() {
+
+        if (!mapRef.current) return;
+
+        if (heatLayerRef.current) {
+            mapRef.current.removeLayer(heatLayerRef.current);
+            heatLayerRef.current = null;
+        }
+
+        if (!heatOn || !L.heatLayer) return;
+
+        const points = [];
+
+        cameras.forEach(function(camera) {
+
+            const count = camera.sightings
+                .filter(function(sighting) {
+                    return heatFilter === "All" ||
+                        sighting.deerType === heatFilter;
+                })
+                .reduce(function(total, sighting) {
+                    return total + Number(sighting.number || 0);
+                }, 0);
+
+            if (count > 0) {
+                points.push([camera.lat, camera.lng, count]);
+            }
+        });
+
+        if (!points.length) return;
+
+        const maxCount = Math.max.apply(
+            null,
+            points.map(function(point) {
+                return point[2];
+            })
+        );
+
+        heatLayerRef.current = L.heatLayer(points, {
+            radius: 40,
+            blur: 30,
+            maxZoom: 17,
+            max: maxCount,
+            minOpacity: 0.35
+        }).addTo(mapRef.current);
+
+    }, [heatOn, heatFilter, cameras, mapVersion]);
 
     function openCamera(camera) {
 
@@ -1117,7 +1253,7 @@ function App() {
         setDeerType("Buck");
         setNumber("1");
         setAntlerPoints("");
-        setEstimatedScore("");
+        setDirection("");
         setNotes("");
     }
 
@@ -1137,10 +1273,7 @@ function App() {
                 antlerPoints === ""
                     ? null
                     : Number(antlerPoints),
-            estimatedScore:
-                estimatedScore === ""
-                    ? null
-                    : Number(estimatedScore),
+            direction: direction,
             notes: notes
         };
 
@@ -1570,41 +1703,21 @@ function App() {
                     Number(s.number || 0);
             }, 0);
 
-    const scoredBucks =
-        allSightings.filter(function(s) {
+    const directionCounts = {};
 
-            return s.deerType === "Buck" &&
-                Number(s.estimatedScore) > 0;
+    allSightings.forEach(function(sighting) {
 
-        });
+        if (!sighting.direction) return;
 
-    const highestScore =
-        scoredBucks.length
-            ? Math.max.apply(
-                null,
-                scoredBucks.map(function(s) {
-                    return Number(
-                        s.estimatedScore
-                    );
-                })
-            )
-            : 0;
+        directionCounts[sighting.direction] =
+            (directionCounts[sighting.direction] || 0) +
+            Number(sighting.number || 0);
+    });
 
-    const averageScore =
-        scoredBucks.length
-            ? Math.round(
-                scoredBucks.reduce(
-                    function(total, s) {
-                        return total +
-                            Number(
-                                s.estimatedScore
-                            );
-                    },
-                    0
-                ) /
-                scoredBucks.length
-            )
-            : 0;
+    const topDirectionKey =
+        Object.keys(directionCounts).sort(function(x, y) {
+            return directionCounts[y] - directionCounts[x];
+        })[0];
 
     const cameraActivity =
         cameras.map(function(camera) {
@@ -1838,16 +1951,19 @@ function App() {
                             {
                                 className: "stat-label"
                             },
-                            "Highest Estimated Buck"
+                            "Most Common Direction"
                         ),
 
                         e(
                             "div",
                             {
-                                className: "stat-value"
+                                className: "stat-value",
+                                style: {
+                                    fontSize: "19px"
+                                }
                             },
-                            highestScore
-                                ? highestScore + '"'
+                            topDirectionKey
+                                ? directionText(topDirectionKey)
                                 : "—"
                         ),
 
@@ -1856,41 +1972,7 @@ function App() {
                             {
                                 className: "stat-detail"
                             },
-                            "Estimated score"
-                        )
-                    ),
-
-                    e(
-                        "div",
-                        {
-                            className: "stat"
-                        },
-
-                        e(
-                            "div",
-                            {
-                                className: "stat-label"
-                            },
-                            "Average Buck Score"
-                        ),
-
-                        e(
-                            "div",
-                            {
-                                className: "stat-value"
-                            },
-                            averageScore
-                                ? averageScore + '"'
-                                : "—"
-                        ),
-
-                        e(
-                            "div",
-                            {
-                                className: "stat-detail"
-                            },
-                            scoredBucks.length +
-                            " scored sightings"
+                            "Direction of travel"
                         )
                     ),
 
@@ -2161,7 +2243,10 @@ function App() {
 
                                                 sighting.date +
                                                 " " +
-                                                sighting.time
+                                                sighting.time +
+                                                (sighting.direction
+                                                    ? " · Heading " + directionText(sighting.direction)
+                                                    : "")
                                             ),
 
                                             sighting.notes
@@ -2263,7 +2348,7 @@ function App() {
                                             e(
                                                 "th",
                                                 null,
-                                                "Score"
+                                                "Direction"
                                             ),
 
                                             e(
@@ -2328,9 +2413,8 @@ function App() {
                                                     e(
                                                         "td",
                                                         null,
-                                                        sighting.estimatedScore
-                                                            ? sighting.estimatedScore +
-                                                              '"'
+                                                        sighting.direction
+                                                            ? directionText(sighting.direction)
                                                             : "—"
                                                     ),
 
@@ -2359,6 +2443,130 @@ function App() {
         );
     }
 
+    function colorRow(label, key) {
+
+        return e(
+            "div",
+            {
+                key: key,
+                style: {
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: "8px"
+                }
+            },
+
+            e(
+                "span",
+                { style: { fontSize: "13px" } },
+                label
+            ),
+
+            e(
+                "input",
+                {
+                    type: "color",
+                    value: colors[key],
+                    style: {
+                        width: "48px",
+                        height: "32px",
+                        padding: "0",
+                        border: "1px solid #ccc",
+                        borderRadius: "6px"
+                    },
+                    onChange: function(event) {
+
+                        const value = event.target.value;
+
+                        setColors(function(previous) {
+                            return { ...previous, [key]: value };
+                        });
+                    }
+                }
+            )
+        );
+    }
+
+    function mapOptions() {
+
+        return e(
+            "div",
+            {
+                className: "card",
+                key: "map-options"
+            },
+
+            e("h3", null, "Map Options"),
+
+            e(
+                "button",
+                {
+                    className: heatOn ? "primary" : "secondary",
+                    style: {
+                        width: "100%",
+                        marginBottom: "10px"
+                    },
+                    onClick: function() {
+                        setHeatOn(!heatOn);
+                    }
+                },
+                heatOn ? "Heat Map: On" : "Heat Map: Off"
+            ),
+
+            heatOn
+                ? e(
+                    "div",
+                    { className: "form-group" },
+
+                    e("label", null, "Heat map shows"),
+
+                    e(
+                        "select",
+                        {
+                            value: heatFilter,
+                            onChange: function(event) {
+                                setHeatFilter(event.target.value);
+                            }
+                        },
+                        e("option", { value: "All" }, "All deer"),
+                        e("option", { value: "Buck" }, "Bucks"),
+                        e("option", { value: "Doe" }, "Does"),
+                        e("option", { value: "Fawn" }, "Fawns")
+                    )
+                )
+                : null,
+
+            e(
+                "div",
+                {
+                    style: {
+                        fontSize: "13px",
+                        fontWeight: "bold",
+                        margin: "4px 0 8px"
+                    }
+                },
+                "Map Colors"
+            ),
+
+            colorRow("Camera marker", "camera"),
+            colorRow("Camera outline", "cameraOutline"),
+            colorRow("Deer trails", "trail"),
+
+            e(
+                "button",
+                {
+                    className: "secondary",
+                    style: { width: "100%" },
+                    onClick: function() {
+                        setColors({ ...DEFAULT_COLORS });
+                    }
+                },
+                "Reset Colors"
+            )
+        );
+    }
+
     function CameraPanel() {
 
         if (!selectedCamera) {
@@ -2366,6 +2574,8 @@ function App() {
             return e(
                 React.Fragment,
                 null,
+
+                mapOptions(),
 
                 e(
                     "div",
@@ -2849,37 +3059,53 @@ function App() {
                                     )
                                 ),
 
-                                e(
-                                    "div",
-                                    {
-                                        className:
-                                            "form-group"
-                                    },
-
-                                    e(
-                                        "label",
-                                        null,
-                                        "Estimated Score"
-                                    ),
-
-                                    e(
-                                        "input",
-                                        {
-                                            type: "number",
-                                            min: "0",
-                                            value:
-                                                estimatedScore,
-                                            onChange:
-                                                function(event) {
-                                                    setEstimatedScore(
-                                                        event.target.value
-                                                    );
-                                                }
-                                        }
-                                    )
-                                )
+                                
                             )
                             : null,
+
+                        e(
+                            "div",
+                            {
+                                className:
+                                    "form-group"
+                            },
+
+                            e(
+                                "label",
+                                null,
+                                "Direction of Travel"
+                            ),
+
+                            e(
+                                "select",
+                                {
+                                    value: direction,
+                                    onChange:
+                                        function(event) {
+                                            setDirection(
+                                                event.target.value
+                                            );
+                                        }
+                                },
+
+                                e(
+                                    "option",
+                                    { value: "" },
+                                    "Not sure"
+                                ),
+
+                                DIRECTIONS.map(function(d) {
+                                    return e(
+                                        "option",
+                                        {
+                                            value: d.value,
+                                            key: d.value
+                                        },
+                                        d.arrow + " " + d.label
+                                    );
+                                })
+                            )
+                        ),
 
                         e(
                             "div",
@@ -2979,13 +3205,14 @@ function App() {
                                         )
                                         : null,
 
-                                    sighting.estimatedScore
+                                    sighting.direction
                                         ? e(
                                             "p",
                                             null,
-                                            "Estimated score: " +
-                                            sighting.estimatedScore +
-                                            '"'
+                                            "Heading: " +
+                                            directionText(
+                                                sighting.direction
+                                            )
                                         )
                                         : null,
 
@@ -3022,7 +3249,9 @@ function App() {
                         },
                         "No sightings recorded."
                     )
-            )
+            ),
+
+            mapOptions()
         );
     }
 
