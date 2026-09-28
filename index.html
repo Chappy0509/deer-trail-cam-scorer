@@ -492,6 +492,135 @@ function directionText(value) {
     return found ? found.arrow + " " + found.label : "";
 }
 
+// ---- Camera scoring ----
+// A camera's score is the sum of its sightings' weights. Each sighting is worth:
+//   number of deer x deer type weight x shooting-hours multiplier x age decay
+// Change the numbers below to tune it.
+const SCORE_CONFIG = {
+    halfLifeDays: 7,            // a sighting counts half as much after this many days
+    typeWeights: {
+        Buck: 3,
+        Doe: 2,
+        Fawn: 1,
+        Unknown: 1
+    },
+    shootingMultiplier: 2,      // sightings during shooting hours
+    otherMultiplier: 1,         // sightings outside shooting hours
+    shootingBufferMinutes: 30   // shooting hours = sunrise - buffer to sunset + buffer
+};
+
+// Sunrise or sunset as a UTC timestamp (ms) for a calendar date and location.
+function sunEvent(year, month0, day, lat, lng, isRise) {
+
+    const rad = Math.PI / 180;
+
+    const dayOfYear = Math.floor(
+        (Date.UTC(year, month0, day) - Date.UTC(year, 0, 0)) / 86400000
+    );
+
+    const lngHour = lng / 15;
+    const t = dayOfYear + ((isRise ? 6 : 18) - lngHour) / 24;
+    const M = 0.9856 * t - 3.289;
+
+    let L = M +
+        1.916 * Math.sin(M * rad) +
+        0.020 * Math.sin(2 * M * rad) +
+        282.634;
+
+    L = ((L % 360) + 360) % 360;
+
+    let RA = Math.atan(0.91764 * Math.tan(L * rad)) / rad;
+    RA = ((RA % 360) + 360) % 360;
+    RA += Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90;
+    RA = RA / 15;
+
+    const sinDec = 0.39782 * Math.sin(L * rad);
+    const cosDec = Math.cos(Math.asin(sinDec));
+
+    const cosH =
+        (Math.cos(90.833 * rad) - sinDec * Math.sin(lat * rad)) /
+        (cosDec * Math.cos(lat * rad));
+
+    if (cosH > 1 || cosH < -1) return null;
+
+    let H = isRise
+        ? 360 - Math.acos(cosH) / rad
+        : Math.acos(cosH) / rad;
+
+    H = H / 15;
+
+    let T = H + RA - 0.06571 * t - 6.622;
+    T = ((T % 24) + 24) % 24;
+
+    return Date.UTC(year, month0, day) + (T - lngHour) * 3600000;
+}
+
+function isShootingTime(sighting, camera) {
+
+    if (!sighting.date || !sighting.time) return false;
+
+    const dateParts = sighting.date.split("-").map(Number);
+    const timeParts = sighting.time.split(":").map(Number);
+
+    const y = dateParts[0];
+    const m = dateParts[1] - 1;
+    const d = dateParts[2];
+    const hh = timeParts[0];
+    const mm = timeParts[1] || 0;
+
+    if (![y, m, d, hh, mm].every(Number.isFinite)) return false;
+
+    const when = new Date(y, m, d, hh, mm).getTime();
+
+    const rise = sunEvent(y, m, d, camera.lat, camera.lng, true);
+    const set = sunEvent(y, m, d, camera.lat, camera.lng, false);
+
+    if (rise === null || set === null) {
+        return hh >= 6 && hh < 19;
+    }
+
+    const buffer = SCORE_CONFIG.shootingBufferMinutes * 60000;
+
+    return when >= rise - buffer && when <= set + buffer;
+}
+
+function sightingScore(sighting, camera, now) {
+
+    const typeWeight =
+        SCORE_CONFIG.typeWeights[sighting.deerType] !== undefined
+            ? SCORE_CONFIG.typeWeights[sighting.deerType]
+            : 1;
+
+    const timeWeight = isShootingTime(sighting, camera)
+        ? SCORE_CONFIG.shootingMultiplier
+        : SCORE_CONFIG.otherMultiplier;
+
+    let ageDays = 0;
+
+    if (sighting.date) {
+        const when = new Date(
+            sighting.date + "T" + (sighting.time || "12:00")
+        ).getTime();
+
+        if (Number.isFinite(when)) {
+            ageDays = Math.max(0, (now - when) / 86400000);
+        }
+    }
+
+    const decay = Math.pow(0.5, ageDays / SCORE_CONFIG.halfLifeDays);
+
+    return Number(sighting.number || 1) * typeWeight * timeWeight * decay;
+}
+
+function cameraScore(camera) {
+
+    const now = Date.now();
+
+    return camera.sightings.reduce(function(total, sighting) {
+        return total + sightingScore(sighting, camera, now);
+    }, 0);
+}
+
 function getCameras() {
     try {
         const data = JSON.parse(localStorage.getItem(CAMERA_KEY));
@@ -741,6 +870,8 @@ function App() {
     const [heatFilter, setHeatFilter] = useState("All");
     const [mapVersion, setMapVersion] = useState(0);
 
+    const [movingCameraId, setMovingCameraId] = useState(null);
+
     const [signedIn, setSignedIn] = useState(false);
     const [syncStatus, setSyncStatus] = useState("");
 
@@ -749,6 +880,7 @@ function App() {
     const trailLayersRef = useRef([]);
     const currentTrailLayerRef = useRef(null);
     const drawingTrailRef = useRef(false);
+    const movingCameraRef = useRef(null);
     const heatLayerRef = useRef(null);
     const colorsRef = useRef(colors);
     colorsRef.current = colors;
@@ -931,6 +1063,45 @@ function App() {
         return camera.id === selectedCameraId;
     });
 
+    function placeMovingCamera(latlng) {
+
+        const id = movingCameraRef.current;
+
+        if (!id) return false;
+
+        setCameras(function(previous) {
+            return previous.map(function(camera) {
+                if (camera.id !== id) return camera;
+                return {
+                    ...camera,
+                    lat: latlng.lat,
+                    lng: latlng.lng
+                };
+            });
+        });
+
+        const marker = cameraMarkersRef.current[id];
+
+        if (marker) {
+            marker.setLatLng(latlng);
+        }
+
+        movingCameraRef.current = null;
+        setMovingCameraId(null);
+
+        return true;
+    }
+
+    function startMoveCamera(id) {
+        movingCameraRef.current = id;
+        setMovingCameraId(id);
+    }
+
+    function cancelMove() {
+        movingCameraRef.current = null;
+        setMovingCameraId(null);
+    }
+
     function initializeMap() {
 
         if (
@@ -964,6 +1135,10 @@ function App() {
         mapRef.current = map;
         setMapVersion(function(v) { return v + 1; });
 
+        // Camera markers live in their own pane above the trails
+        map.createPane("cameraPane");
+        map.getPane("cameraPane").style.zIndex = 650;
+
         L.tileLayer(
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
             {
@@ -980,6 +1155,10 @@ function App() {
         });
 
         map.on("click", function(event) {
+
+            if (placeMovingCamera(event.latlng)) {
+                return;
+            }
 
             if (drawingTrailRef.current) {
 
@@ -1044,6 +1223,7 @@ function App() {
         const marker = L.circleMarker(
             [camera.lat, camera.lng],
             {
+                pane: "cameraPane",
                 radius: 7,
                 color: colorsRef.current.cameraOutline,
                 weight: 2,
@@ -1055,6 +1235,10 @@ function App() {
         marker.on("click", function(event) {
 
             L.DomEvent.stopPropagation(event);
+
+            if (placeMovingCamera(event.latlng)) {
+                return;
+            }
 
             setSelectedCameraId(camera.id);
             setShowSightingForm(false);
@@ -1327,6 +1511,7 @@ function App() {
 
     function startTrail() {
 
+        cancelMove();
         setSelectedCameraId(null);
         setShowSightingForm(false);
 
@@ -1740,6 +1925,18 @@ function App() {
             return b.count - a.count;
         });
 
+    const cameraScores =
+        cameras.map(function(camera) {
+
+            return {
+                name: camera.name,
+                score: cameraScore(camera)
+            };
+
+        }).sort(function(a, b) {
+            return b.score - a.score;
+        });
+
     const timeActivity = {
         "12 AM - 5 AM": 0,
         "5 AM - 9 AM": 0,
@@ -1842,6 +2039,13 @@ function App() {
                 return c.count;
             }),
             1
+        );
+
+        const maxScore = Math.max(
+            ...cameraScores.map(function(c) {
+                return c.score;
+            }),
+            0.0001
         );
 
         return e(
@@ -2074,6 +2278,47 @@ function App() {
                             {
                                 className: "stat-label"
                             },
+                            "Top Scored Camera"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-value",
+                                style: {
+                                    fontSize: "19px"
+                                }
+                            },
+                            cameraScores.length &&
+                            cameraScores[0].score > 0
+                                ? cameraScores[0].name
+                                : "—"
+                        ),
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-detail"
+                            },
+                            cameraScores.length &&
+                            cameraScores[0].score > 0
+                                ? "Score " +
+                                  cameraScores[0].score.toFixed(1)
+                                : ""
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "stat"
+                        },
+
+                        e(
+                            "div",
+                            {
+                                className: "stat-label"
+                            },
                             "Latest Sighting"
                         ),
 
@@ -2273,6 +2518,52 @@ function App() {
                                     className: "empty"
                                 },
                                 "No sightings yet."
+                            )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className:
+                                "dashboard-card wide"
+                        },
+
+                        e(
+                            "h3",
+                            null,
+                            "Camera Scores"
+                        ),
+
+                        e(
+                            "p",
+                            {
+                                className: "empty",
+                                style: {
+                                    marginTop: 0,
+                                    marginBottom: "16px"
+                                }
+                            },
+                            "Bucks count more than does, and does more than fawns. Sightings during shooting hours count double, and every sighting loses half its weight every " +
+                            SCORE_CONFIG.halfLifeDays +
+                            " days."
+                        ),
+
+                        cameraScores.length
+                            ? cameraScores.map(
+                                function(camera) {
+                                    return bar(
+                                        camera.name,
+                                        Math.round(camera.score * 10) / 10,
+                                        maxScore
+                                    );
+                                }
+                            )
+                            : e(
+                                "div",
+                                {
+                                    className: "empty"
+                                },
+                                "No cameras yet."
                             )
                     ),
 
@@ -2633,7 +2924,8 @@ function App() {
                                         "p",
                                         null,
                                         camera.sightings.length +
-                                        " sightings"
+                                        " sightings · score " +
+                                        cameraScore(camera).toFixed(1)
                                     ),
 
                                     e(
@@ -2808,6 +3100,7 @@ function App() {
                 {
                     className: "secondary",
                     onClick: function() {
+                        cancelMove();
                         setSelectedCameraId(null);
                         setShowSightingForm(false);
                     }
@@ -2840,6 +3133,48 @@ function App() {
                     null,
                     selectedCamera.sightings.length +
                     " sightings"
+                ),
+
+                e(
+                    "p",
+                    null,
+                    "Camera score: " +
+                    cameraScore(selectedCamera).toFixed(1)
+                ),
+
+                movingCameraId === selectedCamera.id
+                    ? e(
+                        "div",
+                        {
+                            className: "drawing",
+                            style: {
+                                marginTop: "10px",
+                                marginBottom: "0"
+                            }
+                        },
+                        "Tap the map where this camera should go."
+                    )
+                    : null,
+
+                e(
+                    "button",
+                    {
+                        className: "secondary",
+                        style: {
+                            width: "100%",
+                            marginTop: "10px"
+                        },
+                        onClick: function() {
+                            if (movingCameraId === selectedCamera.id) {
+                                cancelMove();
+                            } else {
+                                startMoveCamera(selectedCamera.id);
+                            }
+                        }
+                    },
+                    movingCameraId === selectedCamera.id
+                        ? "Cancel Move"
+                        : "Move Marker"
                 ),
 
                 e(
@@ -3057,9 +3392,7 @@ function App() {
                                                 }
                                         }
                                     )
-                                ),
-
-                                
+                                )
                             )
                             : null,
 
