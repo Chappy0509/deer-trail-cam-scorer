@@ -902,6 +902,13 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE_FILE_NAME = "deer-trail-cam-data.json";
 const LAST_MODIFIED_KEY = "deerLastModified";
 const CLIENT_ID_KEY = "deerGoogleClientId";
+const SYNCED_AT_KEY = "deerSyncedAt";
+const SYNCED_REMOTE_KEY = "deerSyncedRemote";
+const WAS_CONNECTED_KEY = "deerDriveWasConnected";
+
+function getSyncedAt() {
+    return Number(localStorage.getItem(SYNCED_AT_KEY)) || 0;
+}
 
 // A Client ID typed into the app (gear button) wins over the one pasted above.
 function getClientId() {
@@ -924,7 +931,7 @@ function setLastModified(timestamp) {
     localStorage.setItem(LAST_MODIFIED_KEY, String(timestamp));
 }
 
-function initDriveTokenClient(callback) {
+function initDriveTokenClient(callback, errorCallback) {
 
     if (!window.google || !window.google.accounts) {
         return false;
@@ -933,7 +940,8 @@ function initDriveTokenClient(callback) {
     driveTokenClient = google.accounts.oauth2.initTokenClient({
         client_id: getClientId(),
         scope: DRIVE_SCOPE,
-        callback: callback
+        callback: callback,
+        error_callback: errorCallback
     });
 
     return true;
@@ -953,7 +961,7 @@ function requestDriveAccess(callback) {
     };
 
     driveTokenClient.requestAccessToken({
-        prompt: driveAccessToken ? "" : "consent"
+        prompt: ""
     });
 }
 
@@ -965,6 +973,34 @@ function driveSignOut() {
 
     driveAccessToken = null;
     driveFileId = null;
+}
+
+async function driveFail(response, what) {
+
+    let detail = "";
+
+    try {
+        const body = await response.json();
+
+        if (body && body.error && body.error.message) {
+            detail = body.error.message;
+        }
+    } catch (error) {}
+
+    let message = what + " (" + response.status + ")";
+
+    if (detail) {
+        message += ": " + detail;
+    }
+
+    if (response.status === 403) {
+        message += " — make sure the Google Drive API is enabled in your Google Cloud project and that you allowed access to the app's Drive data.";
+    }
+
+    const error = new Error(message);
+    error.status = response.status;
+
+    return error;
 }
 
 async function driveFindFile() {
@@ -984,7 +1020,7 @@ async function driveFindFile() {
     });
 
     if (!response.ok) {
-        throw new Error("Drive lookup failed");
+        throw await driveFail(response, "Drive lookup failed");
     }
 
     const data = await response.json();
@@ -1010,7 +1046,7 @@ async function driveDownload(fileId) {
     );
 
     if (!response.ok) {
-        throw new Error("Drive download failed");
+        throw await driveFail(response, "Drive download failed");
     }
 
     return response.json();
@@ -1041,9 +1077,9 @@ async function driveUpload(fileId, dataObj) {
     const url = fileId
         ? "https://www.googleapis.com/upload/drive/v3/files/" +
           fileId +
-          "?uploadType=multipart"
+          "?uploadType=multipart&fields=id%2CmodifiedTime"
         : "https://www.googleapis.com/upload/drive/v3/files" +
-          "?uploadType=multipart";
+          "?uploadType=multipart&fields=id%2CmodifiedTime";
 
     const response = await fetch(url, {
         method: fileId ? "PATCH" : "POST",
@@ -1055,7 +1091,7 @@ async function driveUpload(fileId, dataObj) {
     });
 
     if (!response.ok) {
-        throw new Error("Drive upload failed");
+        throw await driveFail(response, "Drive upload failed");
     }
 
     return response.json();
@@ -1112,6 +1148,7 @@ function App() {
 
     const [signedIn, setSignedIn] = useState(false);
     const [syncStatus, setSyncStatus] = useState("");
+    const [syncError, setSyncError] = useState("");
 
     const mapRef = useRef(null);
     const cameraMarkersRef = useRef({});
@@ -1128,6 +1165,7 @@ function App() {
     const arrowMarkersRef = useRef({});
     const colorsRef = useRef(colors);
     colorsRef.current = colors;
+    syncFnRef.current = syncFromDrive;
     standDraftRef.current = standDraft;
     showTrailsRef.current = showTrails;
     showStandsRef.current = showStands;
@@ -1135,79 +1173,141 @@ function App() {
     const driveSyncTimeoutRef = useRef(null);
     const suppressNextPushRef = useRef(false);
     const signedInRef = useRef(false);
+    const firstSaveRef = useRef(true);
+    const syncBusyRef = useRef(false);
+    const syncFnRef = useRef(null);
 
     useEffect(function() {
         signedInRef.current = signedIn;
     }, [signedIn]);
 
+    function refreshMapLayers(newCameras, newTrails) {
+
+        if (!mapRef.current) return;
+
+        Object.values(cameraMarkersRef.current).forEach(function(marker) {
+            try {
+                mapRef.current.removeLayer(marker);
+            } catch (error) {}
+        });
+
+        cameraMarkersRef.current = {};
+
+        redrawAllTrails([]);
+
+        newCameras.forEach(function(camera) {
+            addCameraMarker(camera);
+        });
+
+        newTrails.forEach(function(trail) {
+            drawSavedTrail(trail);
+        });
+    }
+
+    function markSynced(timestamp, remoteModified) {
+        localStorage.setItem(SYNCED_AT_KEY, String(timestamp));
+        localStorage.setItem(SYNCED_REMOTE_KEY, remoteModified || "");
+    }
+
+    function reportDriveError(error) {
+
+        setSyncStatus("error");
+
+        if (error && error.status === 401) {
+
+            driveAccessToken = null;
+            setSignedIn(false);
+
+            setSyncError(
+                "Your Google session expired. Tap Connect Google Drive to reconnect. Changes on this device are saved and will upload then."
+            );
+
+            return;
+        }
+
+        setSyncError(
+            (error && error.message) ||
+            "Something went wrong talking to Google Drive."
+        );
+    }
+
     async function pushToDrive() {
 
         setSyncStatus("syncing");
 
-        try {
+        const timestamp = Date.now();
 
-            const timestamp = Date.now();
+        const payload = {
+            app: "Deer Trail Cam Scorer",
+            version: 1,
+            lastModified: timestamp,
+            cameras: getCameras(),
+            trails: getTrails(),
+            stands: getStands()
+        };
 
-            const payload = {
-                app: "Deer Trail Cam Scorer",
-                version: 1,
-                lastModified: timestamp,
-                cameras: cameras,
-                trails: trails,
-                stands: stands
-            };
+        const result = await driveUpload(
+            driveFileId,
+            payload
+        );
 
-            const result = await driveUpload(
-                driveFileId,
-                payload
-            );
-
-            if (result && result.id) {
-                driveFileId = result.id;
-            }
-
-            setLastModified(timestamp);
-            setSyncStatus("synced");
-
-        } catch (error) {
-            setSyncStatus("error");
+        if (result && result.id) {
+            driveFileId = result.id;
         }
+
+        markSynced(timestamp, result && result.modifiedTime);
     }
 
     async function pullFromDrive(file) {
 
-        try {
+        const driveData = await driveDownload(file.id);
 
-            const driveData = await driveDownload(file.id);
-
-            if (
-                driveData &&
-                Array.isArray(driveData.cameras) &&
-                Array.isArray(driveData.trails)
-            ) {
-
-                suppressNextPushRef.current = true;
-
-                setCameras(driveData.cameras);
-                setTrails(driveData.trails);
-
-                if (Array.isArray(driveData.stands)) {
-                    setStands(
-                        sanitizeStands(driveData.stands) || []
-                    );
-                }
-
-                setLastModified(
-                    new Date(file.modifiedTime).getTime()
-                );
-            }
-
-        } catch (error) {
-            setSyncStatus("error");
+        if (
+            !driveData ||
+            !Array.isArray(driveData.cameras) ||
+            !Array.isArray(driveData.trails)
+        ) {
+            throw new Error(
+                "The file in Google Drive isn't valid Deer Trail Cam data."
+            );
         }
+
+        const pulledCameras = driveData.cameras.map(function(camera) {
+            return {
+                id: camera.id || Date.now(),
+                name: camera.name || "Camera",
+                lat: Number(camera.lat),
+                lng: Number(camera.lng),
+                sightings: Array.isArray(camera.sightings)
+                    ? camera.sightings
+                    : []
+            };
+        }).filter(function(camera) {
+            return Number.isFinite(camera.lat) &&
+                   Number.isFinite(camera.lng);
+        });
+
+        suppressNextPushRef.current = true;
+
+        setCameras(pulledCameras);
+        setTrails(driveData.trails);
+
+        if (Array.isArray(driveData.stands)) {
+            setStands(
+                sanitizeStands(driveData.stands) || []
+            );
+        }
+
+        refreshMapLayers(pulledCameras, driveData.trails);
+
+        markSynced(Date.now(), file.modifiedTime);
     }
 
     async function syncFromDrive() {
+
+        if (syncBusyRef.current || !driveAccessToken) return;
+
+        syncBusyRef.current = true;
 
         setSyncStatus("syncing");
 
@@ -1215,52 +1315,123 @@ function App() {
 
             const file = await driveFindFile();
 
-            if (file) {
+            if (!file) {
+
+                await pushToDrive();
+
+            } else {
 
                 driveFileId = file.id;
 
-                const driveModified =
-                    new Date(file.modifiedTime).getTime();
+                const localHasData =
+                    getCameras().length > 0 ||
+                    getTrails().length > 0 ||
+                    getStands().length > 0;
 
-                const localModified = getLastModified();
+                const lastRemote =
+                    localStorage.getItem(SYNCED_REMOTE_KEY) || "";
 
-                if (driveModified > localModified) {
+                const remoteChanged = lastRemote !== file.modifiedTime;
 
-                    const confirmed = confirm(
-                        "Cloud data is newer than what's on this device. Load it? This will replace what's currently shown here."
+                const dirty = getLastModified() > getSyncedAt();
+
+                if (!localHasData) {
+
+                    await pullFromDrive(file);
+
+                } else if (!remoteChanged) {
+
+                    if (dirty) {
+                        await pushToDrive();
+                    }
+
+                } else if (!dirty && lastRemote) {
+
+                    await pullFromDrive(file);
+
+                } else {
+
+                    const useCloud = confirm(
+                        "Google Drive already has saved data (from another device or an earlier sync).\n\n" +
+                        "OK = load the cloud data here (replaces what's on this device).\n" +
+                        "Cancel = keep this device's data and overwrite the cloud."
                     );
 
-                    if (confirmed) {
+                    if (useCloud) {
                         await pullFromDrive(file);
                     } else {
                         await pushToDrive();
                     }
-
-                } else if (localModified > driveModified) {
-
-                    await pushToDrive();
                 }
-
-            } else {
-
-                await pushToDrive();
             }
 
             setSyncStatus("synced");
+            setSyncError("");
 
         } catch (error) {
-            setSyncStatus("error");
+
+            reportDriveError(error);
+
+        } finally {
+
+            syncBusyRef.current = false;
         }
     }
 
     function handleDriveAuthResponse(response) {
 
-        if (response && response.access_token) {
-            setSignedIn(true);
-            syncFromDrive();
-        } else if (response && response.error) {
+        if (response && response.error) {
+
             setSyncStatus("error");
+
+            setSyncError(
+                "Google sign-in failed: " +
+                (response.error_description || response.error)
+            );
+
+            return;
         }
+
+        if (response && response.access_token) {
+
+            if (
+                window.google &&
+                !google.accounts.oauth2.hasGrantedAllScopes(
+                    response,
+                    DRIVE_SCOPE
+                )
+            ) {
+
+                driveAccessToken = null;
+
+                setSyncStatus("error");
+
+                setSyncError(
+                    "Drive access wasn't granted. When Google asks, tick the box that lets this app store its data in your Google Drive, then try again."
+                );
+
+                return;
+            }
+
+            localStorage.setItem(WAS_CONNECTED_KEY, "1");
+
+            setSignedIn(true);
+            setSyncError("");
+            syncFromDrive();
+        }
+    }
+
+    function handleDriveTokenError(error) {
+
+        setSyncStatus("error");
+
+        setSyncError(
+            error && error.type === "popup_closed"
+                ? "The Google sign-in window was closed before it finished."
+                : error && error.type === "popup_failed_to_open"
+                    ? "Your browser blocked the Google sign-in popup. Allow popups for this site and try again."
+                    : "Google sign-in failed."
+        );
     }
 
     function askForClientId() {
@@ -1282,7 +1453,7 @@ function App() {
         }
 
         localStorage.setItem(CLIENT_ID_KEY, id);
-        initDriveTokenClient(handleDriveAuthResponse);
+        initDriveTokenClient(handleDriveAuthResponse, handleDriveTokenError);
 
         return true;
     }
@@ -1298,15 +1469,17 @@ function App() {
 
     function signOutOfDrive() {
         driveSignOut();
+        localStorage.removeItem(WAS_CONNECTED_KEY);
         setSignedIn(false);
         setSyncStatus("");
+        setSyncError("");
     }
 
     useEffect(function() {
 
         const interval = setInterval(function() {
 
-            if (initDriveTokenClient(handleDriveAuthResponse)) {
+            if (initDriveTokenClient(handleDriveAuthResponse, handleDriveTokenError)) {
                 clearInterval(interval);
             }
 
@@ -1322,6 +1495,11 @@ function App() {
 
         saveData(cameras, trails, stands);
 
+        if (firstSaveRef.current) {
+            firstSaveRef.current = false;
+            return;
+        }
+
         if (suppressNextPushRef.current) {
             suppressNextPushRef.current = false;
             return;
@@ -1336,11 +1514,34 @@ function App() {
             }
 
             driveSyncTimeoutRef.current = setTimeout(function() {
-                pushToDrive();
+                syncFnRef.current();
             }, 2000);
         }
 
     }, [cameras, trails, stands]);
+
+    useEffect(function() {
+
+        function trySync() {
+
+            if (
+                signedInRef.current &&
+                document.visibilityState === "visible"
+            ) {
+                syncFnRef.current();
+            }
+        }
+
+        const interval = setInterval(trySync, 60000);
+
+        document.addEventListener("visibilitychange", trySync);
+
+        return function() {
+            clearInterval(interval);
+            document.removeEventListener("visibilitychange", trySync);
+        };
+
+    }, []);
 
     const selectedCamera = cameras.find(function(camera) {
         return camera.id === selectedCameraId;
@@ -4752,21 +4953,34 @@ function App() {
                         "⚙"
                     ),
 
-                signedIn
+                signedIn ||
+                syncStatus === "error" ||
+                localStorage.getItem(WAS_CONNECTED_KEY) === "1"
                     ? e(
                         "span",
                         {
+                            onClick: function() {
+                                if (syncError) {
+                                    alert(syncError);
+                                }
+                            },
                             style: {
                                 color: "white",
                                 fontSize: "12px",
-                                alignSelf: "center"
+                                alignSelf: "center",
+                                cursor: syncError ? "pointer" : "default",
+                                textDecoration: syncError
+                                    ? "underline"
+                                    : "none"
                             }
                         },
                         syncStatus === "syncing"
                             ? "Syncing…"
                             : syncStatus === "error"
-                                ? "Sync error"
-                                : "Synced"
+                                ? "Sync error (tap)"
+                                : signedIn
+                                    ? "Synced"
+                                    : "Not syncing"
                     )
                     : null,
 
