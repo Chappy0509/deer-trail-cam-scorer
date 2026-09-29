@@ -488,6 +488,25 @@ th {
 
 <div id="root"></div>
 
+<script>
+// If the app ever crashes, show the error instead of a blank page.
+window.addEventListener("error", function(event) {
+    var root = document.getElementById("root");
+    if (root && !root.children.length) {
+        var box = document.createElement("div");
+        box.style.cssText = "padding:20px;font-family:Arial,sans-serif";
+        var title = document.createElement("h3");
+        title.textContent = "Something went wrong";
+        var detail = document.createElement("pre");
+        detail.style.whiteSpace = "pre-wrap";
+        detail.textContent = String(event.message || "Unknown error");
+        box.appendChild(title);
+        box.appendChild(detail);
+        root.appendChild(box);
+    }
+});
+</script>
+
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -1165,7 +1184,6 @@ function App() {
     const arrowMarkersRef = useRef({});
     const colorsRef = useRef(colors);
     colorsRef.current = colors;
-    syncFnRef.current = syncFromDrive;
     standDraftRef.current = standDraft;
     showTrailsRef.current = showTrails;
     showStandsRef.current = showStands;
@@ -1176,6 +1194,7 @@ function App() {
     const firstSaveRef = useRef(true);
     const syncBusyRef = useRef(false);
     const syncFnRef = useRef(null);
+    syncFnRef.current = syncFromDrive;
 
     useEffect(function() {
         signedInRef.current = signedIn;
