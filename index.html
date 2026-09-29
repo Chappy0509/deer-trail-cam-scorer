@@ -504,11 +504,14 @@ const useRef = React.useRef;
 const CAMERA_KEY = "deerCameras";
 const TRAIL_KEY = "deerTrails";
 const COLORS_KEY = "deerMapColors";
+const STAND_KEY = "deerStands";
+const LAYERS_KEY = "deerMapLayers";
 
 const DEFAULT_COLORS = {
     camera: "#ff0000",
     cameraOutline: "#ffffff",
-    trail: "#ffff00"
+    trail: "#ffff00",
+    stand: "#ff9800"
 };
 
 function getColors() {
@@ -545,7 +548,8 @@ function directionText(value) {
 const SCORE_CONFIG = {
     halfLifeDays: 7,            // a sighting counts half as much after this many days
     typeWeights: {
-        Buck: 3,
+        "Big Buck": 8,
+        Buck: 4,
         Doe: 2,
         Fawn: 1,
         Unknown: 1
@@ -665,6 +669,83 @@ function cameraScore(camera) {
     return camera.sightings.reduce(function(total, sighting) {
         return total + sightingScore(sighting, camera, now);
     }, 0);
+}
+
+// ---- Stands, layers and deer-type helpers ----
+const STAND_TYPES = [
+    "Tree Stand",
+    "Ladder Stand",
+    "Box Blind",
+    "Ground Blind",
+    "Other"
+];
+
+function isBuckType(type) {
+    return type === "Buck" || type === "Big Buck";
+}
+
+function matchesHeatFilter(type, filter) {
+    if (filter === "All") return true;
+    if (filter === "Buck") return isBuckType(type);
+    return type === filter;
+}
+
+function sanitizeStands(list) {
+
+    if (!Array.isArray(list)) return null;
+
+    return list.map(function(stand) {
+        return {
+            id: stand.id || Date.now() + Math.random(),
+            name: stand.name || "Stand",
+            type: stand.type || "Other",
+            lat: Number(stand.lat),
+            lng: Number(stand.lng)
+        };
+    }).filter(function(stand) {
+        return Number.isFinite(stand.lat) &&
+               Number.isFinite(stand.lng);
+    });
+}
+
+function getStands() {
+    try {
+        return sanitizeStands(
+            JSON.parse(localStorage.getItem(STAND_KEY))
+        ) || [];
+    } catch {
+        return [];
+    }
+}
+
+function getLayers() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(LAYERS_KEY)) || {};
+        return {
+            trails: saved.trails !== false,
+            stands: saved.stands !== false
+        };
+    } catch {
+        return { trails: true, stands: true };
+    }
+}
+
+function standIcon(colors) {
+
+    const html =
+        '<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">' +
+        '<path d="M15 3 L27 25 L3 25 Z" fill="' + colors.stand + '" ' +
+        'stroke="' + colors.cameraOutline + '" stroke-width="2.5" ' +
+        'stroke-linejoin="round"/>' +
+        '<circle cx="15" cy="19" r="2.5" fill="' + colors.cameraOutline + '"/>' +
+        '</svg>';
+
+    return L.divIcon({
+        html: html,
+        className: "",
+        iconSize: [30, 30],
+        iconAnchor: [15, 20]
+    });
 }
 
 // ---- Hours, timelapse and direction helpers ----
@@ -791,7 +872,7 @@ function getTrails() {
     }
 }
 
-function saveData(cameras, trails) {
+function saveData(cameras, trails, stands) {
     localStorage.setItem(
         CAMERA_KEY,
         JSON.stringify(cameras)
@@ -800,6 +881,11 @@ function saveData(cameras, trails) {
     localStorage.setItem(
         TRAIL_KEY,
         JSON.stringify(trails)
+    );
+
+    localStorage.setItem(
+        STAND_KEY,
+        JSON.stringify(stands || [])
     );
 }
 
@@ -815,6 +901,16 @@ const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID_HERE.apps.googleusercontent.com"
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE_FILE_NAME = "deer-trail-cam-data.json";
 const LAST_MODIFIED_KEY = "deerLastModified";
+const CLIENT_ID_KEY = "deerGoogleClientId";
+
+// A Client ID typed into the app (gear button) wins over the one pasted above.
+function getClientId() {
+    return localStorage.getItem(CLIENT_ID_KEY) || GOOGLE_CLIENT_ID;
+}
+
+function clientIdLooksValid(id) {
+    return /^\d+-[\w-]+\.apps\.googleusercontent\.com$/.test(id || "");
+}
 
 let driveTokenClient = null;
 let driveAccessToken = null;
@@ -835,7 +931,7 @@ function initDriveTokenClient(callback) {
     }
 
     driveTokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
+        client_id: getClientId(),
         scope: DRIVE_SCOPE,
         callback: callback
     });
@@ -1002,6 +1098,18 @@ function App() {
 
     const [movingCameraId, setMovingCameraId] = useState(null);
 
+    const [stands, setStands] = useState(getStands);
+    const [selectedStandId, setSelectedStandId] = useState(null);
+    const [standDraft, setStandDraft] = useState(null);
+    const [movingStandId, setMovingStandId] = useState(null);
+
+    const [showTrails, setShowTrails] = useState(function() {
+        return getLayers().trails;
+    });
+    const [showStands, setShowStands] = useState(function() {
+        return getLayers().stands;
+    });
+
     const [signedIn, setSignedIn] = useState(false);
     const [syncStatus, setSyncStatus] = useState("");
 
@@ -1011,10 +1119,18 @@ function App() {
     const currentTrailLayerRef = useRef(null);
     const drawingTrailRef = useRef(false);
     const movingCameraRef = useRef(null);
+    const movingStandRef = useRef(null);
+    const standMarkersRef = useRef({});
+    const standDraftRef = useRef(null);
+    const showTrailsRef = useRef(true);
+    const showStandsRef = useRef(true);
     const heatLayerRef = useRef(null);
     const arrowMarkersRef = useRef({});
     const colorsRef = useRef(colors);
     colorsRef.current = colors;
+    standDraftRef.current = standDraft;
+    showTrailsRef.current = showTrails;
+    showStandsRef.current = showStands;
 
     const driveSyncTimeoutRef = useRef(null);
     const suppressNextPushRef = useRef(false);
@@ -1037,7 +1153,8 @@ function App() {
                 version: 1,
                 lastModified: timestamp,
                 cameras: cameras,
-                trails: trails
+                trails: trails,
+                stands: stands
             };
 
             const result = await driveUpload(
@@ -1073,6 +1190,12 @@ function App() {
 
                 setCameras(driveData.cameras);
                 setTrails(driveData.trails);
+
+                if (Array.isArray(driveData.stands)) {
+                    setStands(
+                        sanitizeStands(driveData.stands) || []
+                    );
+                }
 
                 setLastModified(
                     new Date(file.modifiedTime).getTime()
@@ -1140,7 +1263,36 @@ function App() {
         }
     }
 
+    function askForClientId() {
+
+        const current = getClientId();
+
+        const value = prompt(
+            "Paste your Google OAuth Client ID (from Google Cloud Console > Credentials). It ends in .apps.googleusercontent.com",
+            clientIdLooksValid(current) ? current : ""
+        );
+
+        if (!value) return false;
+
+        const id = value.trim();
+
+        if (!clientIdLooksValid(id)) {
+            alert("That doesn't look like a Client ID. It should look like 123456789012-abc123.apps.googleusercontent.com");
+            return false;
+        }
+
+        localStorage.setItem(CLIENT_ID_KEY, id);
+        initDriveTokenClient(handleDriveAuthResponse);
+
+        return true;
+    }
+
     function signInToDrive() {
+
+        if (!clientIdLooksValid(getClientId())) {
+            if (!askForClientId()) return;
+        }
+
         requestDriveAccess(handleDriveAuthResponse);
     }
 
@@ -1168,7 +1320,7 @@ function App() {
 
     useEffect(function() {
 
-        saveData(cameras, trails);
+        saveData(cameras, trails, stands);
 
         if (suppressNextPushRef.current) {
             suppressNextPushRef.current = false;
@@ -1188,10 +1340,14 @@ function App() {
             }, 2000);
         }
 
-    }, [cameras, trails]);
+    }, [cameras, trails, stands]);
 
     const selectedCamera = cameras.find(function(camera) {
         return camera.id === selectedCameraId;
+    });
+
+    const selectedStand = stands.find(function(stand) {
+        return stand.id === selectedStandId;
     });
 
     function placeMovingCamera(latlng) {
@@ -1224,6 +1380,8 @@ function App() {
     }
 
     function startMoveCamera(id) {
+        movingStandRef.current = null;
+        setMovingStandId(null);
         movingCameraRef.current = id;
         setMovingCameraId(id);
     }
@@ -1231,6 +1389,100 @@ function App() {
     function cancelMove() {
         movingCameraRef.current = null;
         setMovingCameraId(null);
+        movingStandRef.current = null;
+        setMovingStandId(null);
+    }
+
+    function placeMovingStand(latlng) {
+
+        const id = movingStandRef.current;
+
+        if (!id) return false;
+
+        setStands(function(previous) {
+            return previous.map(function(stand) {
+                if (stand.id !== id) return stand;
+                return {
+                    ...stand,
+                    lat: latlng.lat,
+                    lng: latlng.lng
+                };
+            });
+        });
+
+        movingStandRef.current = null;
+        setMovingStandId(null);
+
+        return true;
+    }
+
+    function startMoveStand(id) {
+        movingCameraRef.current = null;
+        setMovingCameraId(null);
+        movingStandRef.current = id;
+        setMovingStandId(id);
+    }
+
+    function startStandDraft() {
+
+        cancelMove();
+
+        if (drawingTrailRef.current) {
+            cancelTrail();
+        }
+
+        setSelectedCameraId(null);
+        setSelectedStandId(null);
+        setShowSightingForm(false);
+        setShowStands(true);
+        setStandDraft({ name: "", type: STAND_TYPES[0] });
+    }
+
+    function cancelStandDraft() {
+        standDraftRef.current = null;
+        setStandDraft(null);
+    }
+
+    function openStand(stand) {
+
+        setSelectedStandId(stand.id);
+        setSelectedCameraId(null);
+        setShowSightingForm(false);
+        setShowStands(true);
+        setView("map");
+
+        setTimeout(function() {
+
+            if (mapRef.current) {
+
+                mapRef.current.setView(
+                    [stand.lat, stand.lng],
+                    16
+                );
+            }
+
+        }, 150);
+    }
+
+    function deleteStand(id) {
+
+        const stand = stands.find(function(item) {
+            return item.id === id;
+        });
+
+        if (!stand) return;
+
+        if (!confirm("Delete " + stand.name + "?")) return;
+
+        cancelMove();
+
+        setStands(function(previous) {
+            return previous.filter(function(item) {
+                return item.id !== id;
+            });
+        });
+
+        setSelectedStandId(null);
     }
 
     function initializeMap() {
@@ -1250,6 +1502,7 @@ function App() {
             currentTrailLayerRef.current = null;
             heatLayerRef.current = null;
             arrowMarkersRef.current = {};
+            standMarkersRef.current = {};
         }
 
         if (mapRef.current) {
@@ -1271,6 +1524,10 @@ function App() {
         map.createPane("cameraPane");
         map.getPane("cameraPane").style.zIndex = 650;
 
+        // Stands sit above trails but below cameras
+        map.createPane("standPane");
+        map.getPane("standPane").style.zIndex = 640;
+
         L.tileLayer(
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
             {
@@ -1288,7 +1545,38 @@ function App() {
 
         map.on("click", function(event) {
 
-            if (placeMovingCamera(event.latlng)) {
+            if (
+                placeMovingCamera(event.latlng) ||
+                placeMovingStand(event.latlng)
+            ) {
+                return;
+            }
+
+            if (standDraftRef.current) {
+
+                const draft = standDraftRef.current;
+
+                if (!draft.name.trim()) {
+                    alert("Enter a name for the stand first.");
+                    return;
+                }
+
+                const stand = {
+                    id: Date.now(),
+                    name: draft.name.trim(),
+                    type: draft.type,
+                    lat: event.latlng.lat,
+                    lng: event.latlng.lng
+                };
+
+                setStands(function(previous) {
+                    return [...previous, stand];
+                });
+
+                standDraftRef.current = null;
+                setStandDraft(null);
+                setSelectedStandId(stand.id);
+
                 return;
             }
 
@@ -1326,6 +1614,7 @@ function App() {
 
             addCameraMarker(camera);
 
+            setSelectedStandId(null);
             setSelectedCameraId(camera.id);
         });
     }
@@ -1368,10 +1657,14 @@ function App() {
 
             L.DomEvent.stopPropagation(event);
 
-            if (placeMovingCamera(event.latlng)) {
+            if (
+                placeMovingCamera(event.latlng) ||
+                placeMovingStand(event.latlng)
+            ) {
                 return;
             }
 
+            setSelectedStandId(null);
             setSelectedCameraId(camera.id);
             setShowSightingForm(false);
 
@@ -1395,7 +1688,11 @@ function App() {
                 weight: 5,
                 opacity: 0.9
             }
-        ).addTo(mapRef.current);
+        );
+
+        if (showTrailsRef.current) {
+            line.addTo(mapRef.current);
+        }
 
         trailLayersRef.current.push(line);
     }
@@ -1448,6 +1745,10 @@ function App() {
             layer.setStyle({ color: colors.trail });
         });
 
+        Object.values(standMarkersRef.current).forEach(function(marker) {
+            marker.setIcon(standIcon(colors));
+        });
+
         if (currentTrailLayerRef.current) {
             currentTrailLayerRef.current.setStyle({
                 color: colors.trail
@@ -1473,8 +1774,7 @@ function App() {
 
             const count = camera.sightings
                 .filter(function(sighting) {
-                    return (heatFilter === "All" ||
-                        sighting.deerType === heatFilter) &&
+                    return matchesHeatFilter(sighting.deerType, heatFilter) &&
                         (!timelapseOn ||
                             sightingHour(sighting) === timelapseHour);
                 })
@@ -1507,8 +1807,7 @@ function App() {
 
                     const hourCount = camera.sightings
                         .filter(function(sighting) {
-                            return (heatFilter === "All" ||
-                                sighting.deerType === heatFilter) &&
+                            return matchesHeatFilter(sighting.deerType, heatFilter) &&
                                 sightingHour(sighting) === hour;
                         })
                         .reduce(function(total, sighting) {
@@ -1579,8 +1878,134 @@ function App() {
 
     }, [cameras, colors, mapVersion]);
 
+    useEffect(function() {
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        const markers = standMarkersRef.current;
+        const ids = {};
+
+        stands.forEach(function(stand) {
+            ids[stand.id] = true;
+        });
+
+        Object.keys(markers).forEach(function(id) {
+
+            if (!ids[id]) {
+
+                try {
+                    markers[id].remove();
+                } catch (error) {}
+
+                delete markers[id];
+            }
+        });
+
+        stands.forEach(function(stand) {
+
+            let marker = markers[stand.id];
+
+            if (!marker) {
+
+                marker = L.marker(
+                    [stand.lat, stand.lng],
+                    {
+                        icon: standIcon(colorsRef.current),
+                        pane: "standPane",
+                        keyboard: false
+                    }
+                );
+
+                (function(created, standId) {
+
+                    created.on("click", function(event) {
+
+                        L.DomEvent.stopPropagation(event);
+
+                        const position = created.getLatLng();
+
+                        if (
+                            placeMovingCamera(position) ||
+                            placeMovingStand(position)
+                        ) {
+                            return;
+                        }
+
+                        setSelectedStandId(standId);
+                        setSelectedCameraId(null);
+                        setShowSightingForm(false);
+
+                        map.setView(position, 16);
+                    });
+
+                })(marker, stand.id);
+
+                markers[stand.id] = marker;
+
+            } else {
+
+                marker.setLatLng([stand.lat, stand.lng]);
+            }
+
+            marker.unbindTooltip();
+
+            marker.bindTooltip(
+                stand.name + " (" + stand.type + ")",
+                {
+                    direction: "top",
+                    offset: [0, -14]
+                }
+            );
+
+            if (showStands) {
+
+                if (!map.hasLayer(marker)) {
+                    marker.addTo(map);
+                }
+
+            } else if (map.hasLayer(marker)) {
+
+                map.removeLayer(marker);
+            }
+        });
+
+    }, [stands, mapVersion, showStands]);
+
+    useEffect(function() {
+
+        localStorage.setItem(
+            LAYERS_KEY,
+            JSON.stringify({
+                trails: showTrails,
+                stands: showStands
+            })
+        );
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        trailLayersRef.current.forEach(function(layer) {
+
+            if (showTrails) {
+
+                if (!map.hasLayer(layer)) {
+                    layer.addTo(map);
+                }
+
+            } else if (map.hasLayer(layer)) {
+
+                map.removeLayer(layer);
+            }
+        });
+
+    }, [showTrails, showStands, mapVersion]);
+
     function openCamera(camera) {
 
+        setSelectedStandId(null);
         setSelectedCameraId(camera.id);
         setShowSightingForm(false);
         setView("map");
@@ -1719,6 +2144,9 @@ function App() {
     function startTrail() {
 
         cancelMove();
+        cancelStandDraft();
+        setShowTrails(true);
+        setSelectedStandId(null);
         setSelectedCameraId(null);
         setShowSightingForm(false);
 
@@ -1841,7 +2269,8 @@ function App() {
             version: 1,
             exportedAt: new Date().toISOString(),
             cameras: cameras,
-            trails: trails
+            trails: trails,
+            stands: stands
         };
 
         const json = JSON.stringify(
@@ -2058,7 +2487,17 @@ function App() {
     const buckCount =
         allSightings
             .filter(function(s) {
-                return s.deerType === "Buck";
+                return isBuckType(s.deerType);
+            })
+            .reduce(function(total, s) {
+                return total +
+                    Number(s.number || 0);
+            }, 0);
+
+    const bigBuckCount =
+        allSightings
+            .filter(function(s) {
+                return s.deerType === "Big Buck";
             })
             .reduce(function(total, s) {
                 return total +
@@ -2323,7 +2762,7 @@ function App() {
                             {
                                 className: "stat-detail"
                             },
-                            "Recorded bucks"
+                            bigBuckCount ? bigBuckCount + " big bucks" : "Recorded bucks"
                         )
                     ),
 
@@ -2549,8 +2988,14 @@ function App() {
                         ),
 
                         bar(
+                            "Big Buck",
+                            bigBuckCount,
+                            maxType
+                        ),
+
+                        bar(
                             "Buck",
-                            buckCount,
+                            buckCount - bigBuckCount,
                             maxType
                         ),
 
@@ -2790,7 +3235,7 @@ function App() {
                                     marginBottom: "16px"
                                 }
                             },
-                            "Bucks count more than does, and does more than fawns. Sightings during shooting hours count double, and every sighting loses half its weight every " +
+                            "Big bucks count most, then bucks, does and fawns. Sightings during shooting hours count double, and every sighting loses half its weight every " +
                             SCORE_CONFIG.halfLifeDays +
                             " days."
                         ),
@@ -3074,7 +3519,8 @@ function App() {
                             }
                         },
                         e("option", { value: "All" }, "All deer"),
-                        e("option", { value: "Buck" }, "Bucks"),
+                        e("option", { value: "Buck" }, "Bucks (incl. big bucks)"),
+                        e("option", { value: "Big Buck" }, "Big bucks only"),
                         e("option", { value: "Doe" }, "Does"),
                         e("option", { value: "Fawn" }, "Fawns")
                     )
@@ -3187,12 +3633,60 @@ function App() {
                         margin: "4px 0 8px"
                     }
                 },
+                "Show on Map"
+            ),
+
+            e(
+                "div",
+                {
+                    style: {
+                        display: "flex",
+                        gap: "8px",
+                        marginBottom: "12px"
+                    }
+                },
+
+                e(
+                    "button",
+                    {
+                        className: showTrails ? "primary" : "secondary",
+                        style: { flex: 1 },
+                        onClick: function() {
+                            setShowTrails(!showTrails);
+                        }
+                    },
+                    showTrails ? "Trails: On" : "Trails: Off"
+                ),
+
+                e(
+                    "button",
+                    {
+                        className: showStands ? "primary" : "secondary",
+                        style: { flex: 1 },
+                        onClick: function() {
+                            setShowStands(!showStands);
+                        }
+                    },
+                    showStands ? "Stands: On" : "Stands: Off"
+                )
+            ),
+
+            e(
+                "div",
+                {
+                    style: {
+                        fontSize: "13px",
+                        fontWeight: "bold",
+                        margin: "4px 0 8px"
+                    }
+                },
                 "Map Colors"
             ),
 
             colorRow("Camera marker", "camera"),
             colorRow("Camera outline", "cameraOutline"),
             colorRow("Deer trails", "trail"),
+            colorRow("Stand marker", "stand"),
 
             e(
                 "button",
@@ -3208,7 +3702,255 @@ function App() {
         );
     }
 
+    function standsSection() {
+
+        return e(
+            "div",
+            {
+                className: "section"
+            },
+
+            e("h2", null, "Stands"),
+
+            standDraft
+                ? e(
+                    React.Fragment,
+                    null,
+
+                    e(
+                        "div",
+                        {
+                            className: "drawing"
+                        },
+                        "Name the stand, pick a type, then tap the map to place it."
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "form-group"
+                        },
+
+                        e("label", null, "Name"),
+
+                        e(
+                            "input",
+                            {
+                                type: "text",
+                                value: standDraft.name,
+                                placeholder: "e.g. North Ridge Ladder",
+                                onChange: function(event) {
+                                    setStandDraft({
+                                        ...standDraft,
+                                        name: event.target.value
+                                    });
+                                }
+                            }
+                        )
+                    ),
+
+                    e(
+                        "div",
+                        {
+                            className: "form-group"
+                        },
+
+                        e("label", null, "Type"),
+
+                        e(
+                            "select",
+                            {
+                                value: standDraft.type,
+                                onChange: function(event) {
+                                    setStandDraft({
+                                        ...standDraft,
+                                        type: event.target.value
+                                    });
+                                }
+                            },
+                            STAND_TYPES.map(function(type) {
+                                return e(
+                                    "option",
+                                    {
+                                        key: type,
+                                        value: type
+                                    },
+                                    type
+                                );
+                            })
+                        )
+                    ),
+
+                    e(
+                        "button",
+                        {
+                            className: "cancel-button",
+                            onClick: cancelStandDraft
+                        },
+                        "Cancel"
+                    )
+                )
+                : e(
+                    "button",
+                    {
+                        className: "trail-button",
+                        style: { background: "#b26a00" },
+                        onClick: startStandDraft
+                    },
+                    "+ Add Stand"
+                ),
+
+            stands.length
+                ? stands.map(function(stand) {
+
+                    return e(
+                        "div",
+                        {
+                            className: "card",
+                            key: stand.id
+                        },
+
+                        e("h3", null, stand.name),
+
+                        e("p", null, stand.type),
+
+                        e(
+                            "div",
+                            {
+                                className: "form-buttons"
+                            },
+
+                            e(
+                                "button",
+                                {
+                                    className: "primary",
+                                    onClick: function() {
+                                        openStand(stand);
+                                    }
+                                },
+                                "Open"
+                            ),
+
+                            e(
+                                "button",
+                                {
+                                    className: "danger",
+                                    onClick: function() {
+                                        deleteStand(stand.id);
+                                    }
+                                },
+                                "Delete"
+                            )
+                        )
+                    );
+
+                })
+                : e(
+                    "div",
+                    {
+                        className: "empty"
+                    },
+                    "No stands yet."
+                )
+        );
+    }
+
+    function standPanel() {
+
+        const moving = movingStandId === selectedStand.id;
+
+        return e(
+            React.Fragment,
+            null,
+
+            e(
+                "button",
+                {
+                    className: "secondary",
+                    onClick: function() {
+                        cancelMove();
+                        setSelectedStandId(null);
+                    }
+                },
+                "← Back"
+            ),
+
+            e(
+                "div",
+                {
+                    className: "card"
+                },
+
+                e("h2", null, selectedStand.name),
+
+                e("p", null, selectedStand.type),
+
+                e(
+                    "p",
+                    null,
+                    selectedStand.lat.toFixed(6) +
+                    ", " +
+                    selectedStand.lng.toFixed(6)
+                ),
+
+                moving
+                    ? e(
+                        "div",
+                        {
+                            className: "drawing",
+                            style: {
+                                marginTop: "10px",
+                                marginBottom: "0"
+                            }
+                        },
+                        "Tap the map where this stand should go."
+                    )
+                    : null,
+
+                e(
+                    "button",
+                    {
+                        className: "secondary",
+                        style: {
+                            width: "100%",
+                            marginTop: "10px"
+                        },
+                        onClick: function() {
+                            if (moving) {
+                                cancelMove();
+                            } else {
+                                startMoveStand(selectedStand.id);
+                            }
+                        }
+                    },
+                    moving ? "Cancel Move" : "Move Stand"
+                ),
+
+                e(
+                    "button",
+                    {
+                        className: "danger",
+                        style: {
+                            width: "100%",
+                            marginTop: "10px"
+                        },
+                        onClick: function() {
+                            deleteStand(selectedStand.id);
+                        }
+                    },
+                    "Delete Stand"
+                )
+            ),
+
+            mapOptions()
+        );
+    }
+
     function CameraPanel() {
+
+        if (selectedStand) {
+            return standPanel();
+        }
 
         if (!selectedCamera) {
 
@@ -3437,7 +4179,9 @@ function App() {
                             },
                             "No trails yet."
                         )
-                )
+                ),
+
+                standsSection()
             );
         }
 
@@ -3675,6 +4419,12 @@ function App() {
                                 e(
                                     "option",
                                     null,
+                                    "Big Buck"
+                                ),
+
+                                e(
+                                    "option",
+                                    null,
                                     "Doe"
                                 ),
 
@@ -3722,7 +4472,7 @@ function App() {
                             )
                         ),
 
-                        deerType === "Buck"
+                        isBuckType(deerType)
                             ? e(
                                 React.Fragment,
                                 null,
@@ -3986,6 +4736,21 @@ function App() {
                         ? "Disconnect Drive"
                         : "Connect Google Drive"
                 ),
+
+                signedIn
+                    ? null
+                    : e(
+                        "button",
+                        {
+                            className:
+                                "header-button",
+                            title:
+                                "Set Google Client ID",
+                            onClick:
+                                askForClientId
+                        },
+                        "⚙"
+                    ),
 
                 signedIn
                     ? e(
