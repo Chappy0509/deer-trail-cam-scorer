@@ -1,5 +1,5 @@
 // Bump this number whenever you upload a new index.html so phones pick it up.
-const CACHE = "deer-cam-v1";
+const CACHE = "deer-cam-v2";
 
 const APP_SHELL = [
     "./",
