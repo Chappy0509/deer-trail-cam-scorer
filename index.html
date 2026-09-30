@@ -1,23 +1,40 @@
 <!DOCTYPE html>
+<!--
+  Deer Trail Cam Scorer - one single page app.
+  Everything (look, logic, pages) lives in this one file:
+    1. <head>   page settings, PWA install links, Leaflet map stylesheet, and the CSS styles
+    2. <body>   an empty <div id="root"> that the script below fills in
+    3. <script> the React code: helpers, charts, Google Drive sync, and the App itself
+-->
 <html lang="en">
 <head>
+<!-- Use the UTF-8 character set so arrows and symbols display correctly -->
 <meta charset="UTF-8">
+<!-- Make the page fit phone screens instead of being zoomed out -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Deer Trail Cam Scorer</title>
+<!-- PWA: manifest.json lets the app be installed to a home screen -->
 <link rel="manifest" href="manifest.json">
+<!-- Color of the phone status bar / browser toolbar -->
 <meta name="theme-color" content="#1f4d2b">
+<!-- Let the app open full screen when launched from the home screen (Android / iOS) -->
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Trail Cams">
+<!-- Icon iPhones use on the home screen -->
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
+<!-- Leaflet (the map library) stylesheet -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 
 <style>
+/* ===== Styles for the whole app. Each rule has a short note saying what it controls. ===== */
+/* Make padding and borders count inside an element's width so sizes are predictable */
 * {
     box-sizing: border-box;
 }
 
+/* Page-wide defaults: no outer margin, Arial font, light grey background, dark text */
 body {
     margin: 0;
     font-family: Arial, sans-serif;
@@ -25,6 +42,7 @@ body {
     color: #222;
 }
 
+/* Base look shared by every button (colors are added by the classes below) */
 button {
     border: none;
     border-radius: 6px;
@@ -33,12 +51,14 @@ button {
     font-size: 14px;
 }
 
+/* Form controls use the same font as the rest of the page */
 input,
 select,
 textarea {
     font-family: Arial, sans-serif;
 }
 
+/* Green top bar holding the title and the Drive / Export / Import buttons */
 header {
     background: #1f4d2b;
     color: white;
@@ -48,26 +68,31 @@ header {
     align-items: center;
 }
 
+/* The app title in the top bar */
 header h1 {
     margin: 0;
     font-size: 22px;
 }
 
+/* Row that holds the buttons on the right side of the top bar */
 .header-buttons {
     display: flex;
     gap: 8px;
 }
 
+/* White button style used inside the green top bar */
 .header-button {
     background: white;
     color: #1f4d2b;
 }
 
+/* Dark green tab bar (Dashboard / Charts / Map) */
 .nav {
     background: #163a20;
     display: flex;
 }
 
+/* Each tab button: transparent with white text */
 .nav button {
     background: transparent;
     color: white;
@@ -75,16 +100,19 @@ header h1 {
     padding: 12px 20px;
 }
 
+/* The tab you are currently on is shown white */
 .nav button.active {
     background: white;
     color: #1f4d2b;
 }
 
+/* Map page layout: sidebar on the left, map on the right */
 .app {
     display: flex;
     height: calc(100vh - 105px);
 }
 
+/* The scrolling left panel on the Map page */
 .sidebar {
     width: 360px;
     background: white;
@@ -93,20 +121,24 @@ header h1 {
     border-right: 1px solid #ddd;
 }
 
+/* The map itself fills the rest of the space */
 #map {
     flex: 1;
     min-height: 400px;
 }
 
+/* Headings have no top margin */
 h2,
 h3 {
     margin-top: 0;
 }
 
+/* A block of the sidebar (cameras, trails, stands) with space below it */
 .section {
     margin-bottom: 22px;
 }
 
+/* White rounded box used for items in the sidebar */
 .card {
     background: white;
     border: 1px solid #ddd;
@@ -115,31 +147,37 @@ h3 {
     margin-bottom: 10px;
 }
 
+/* Heading inside a sidebar card */
 .card h3 {
     margin-bottom: 7px;
 }
 
+/* Small grey text inside a sidebar card */
 .card p {
     margin: 5px 0;
     color: #555;
     font-size: 13px;
 }
 
+/* Green action button */
 .primary {
     background: #1f4d2b;
     color: white;
 }
 
+/* Red delete button */
 .danger {
     background: #c0392b;
     color: white;
 }
 
+/* Grey neutral button */
 .secondary {
     background: #ddd;
     color: #222;
 }
 
+/* Brown '+ Add Deer Trail' button */
 .trail-button {
     width: 100%;
     background: #6b4f2a;
@@ -147,6 +185,7 @@ h3 {
     margin-bottom: 8px;
 }
 
+/* Green 'Finish Trail' button */
 .finish-button {
     width: 100%;
     background: #1f4d2b;
@@ -154,16 +193,19 @@ h3 {
     margin-bottom: 8px;
 }
 
+/* Dark grey 'Cancel' button */
 .cancel-button {
     width: 100%;
     background: #777;
     color: white;
 }
 
+/* One labelled field in a form */
 .form-group {
     margin-bottom: 12px;
 }
 
+/* Bold label above a form field */
 .form-group label {
     display: block;
     font-size: 13px;
@@ -171,8 +213,10 @@ h3 {
     margin-bottom: 5px;
 }
 
+/* Inputs, dropdowns and text areas fill the width of the form */
 .form-group input,
 .form-group select,
+/* The notes box is taller and can be resized up and down */
 .form-group textarea {
     width: 100%;
     padding: 9px;
@@ -180,38 +224,46 @@ h3 {
     border-radius: 6px;
 }
 
+/* The notes box is taller and can be resized up and down */
 .form-group textarea {
     min-height: 75px;
     resize: vertical;
 }
 
+/* Row of buttons inside a card (Open / Delete) */
 .form-buttons {
     display: flex;
     gap: 8px;
 }
 
+/* Buttons in that row share the width equally */
 .form-buttons button {
     flex: 1;
 }
 
+/* One sighting in a camera's list, separated by a line */
 .sighting {
     border-top: 1px solid #ddd;
     padding-top: 10px;
     margin-top: 10px;
 }
 
+/* No separator line above the first sighting */
 .sighting:first-child {
     border-top: none;
 }
 
+/* Sighting title on its own line */
 .sighting strong {
     display: block;
 }
 
+/* Sighting date/time in grey */
 .sighting small {
     color: #666;
 }
 
+/* Yellow hint box ('Click points on the map...') */
 .drawing {
     background: #fff3cd;
     border: 1px solid #ffe69c;
@@ -221,30 +273,36 @@ h3 {
     font-size: 13px;
 }
 
+/* Scrolling page area used by Dashboard and Charts */
 .dashboard {
     height: calc(100vh - 105px);
     overflow-y: auto;
     padding: 25px;
 }
 
+/* Centers the page content with a maximum width */
 .dashboard-inner {
     max-width: 1400px;
     margin: auto;
 }
 
+/* Space under the page title */
 .dashboard-title {
     margin-bottom: 20px;
 }
 
+/* Page title */
 .dashboard-title h2 {
     margin-bottom: 5px;
 }
 
+/* Grey subtitle under the page title */
 .dashboard-title p {
     margin: 0;
     color: #666;
 }
 
+/* Grid of the small number boxes at the top of the dashboard */
 .stats {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -252,6 +310,7 @@ h3 {
     margin-bottom: 20px;
 }
 
+/* One number box (label, big value, detail) */
 .stat {
     background: white;
     border: 1px solid #ddd;
@@ -259,11 +318,13 @@ h3 {
     padding: 18px;
 }
 
+/* Small grey label in a number box */
 .stat-label {
     color: #666;
     font-size: 13px;
 }
 
+/* Big green number in a number box */
 .stat-value {
     color: #1f4d2b;
     font-size: 28px;
@@ -271,18 +332,21 @@ h3 {
     margin-top: 8px;
 }
 
+/* Tiny grey text under the big number */
 .stat-detail {
     color: #777;
     font-size: 12px;
     margin-top: 5px;
 }
 
+/* Two-column grid that holds the dashboard / chart cards */
 .dashboard-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 20px;
 }
 
+/* White rounded card on the dashboard and charts pages */
 .dashboard-card {
     background: white;
     border: 1px solid #ddd;
@@ -290,18 +354,22 @@ h3 {
     padding: 18px;
 }
 
+/* Card heading */
 .dashboard-card h3 {
     margin-bottom: 18px;
 }
 
+/* A card that spans both columns */
 .wide {
     grid-column: 1 / -1;
 }
 
+/* One row of a horizontal bar chart */
 .bar-row {
     margin-bottom: 14px;
 }
 
+/* Label on the left, number on the right above each bar */
 .bar-header {
     display: flex;
     justify-content: space-between;
@@ -309,6 +377,7 @@ h3 {
     margin-bottom: 5px;
 }
 
+/* Grey track behind a bar */
 .bar-background {
     background: #e5e5e5;
     height: 12px;
@@ -316,11 +385,13 @@ h3 {
     overflow: hidden;
 }
 
+/* The green filled part of a bar */
 .bar {
     height: 100%;
     background: #1f4d2b;
 }
 
+/* One entry in the Recent Sightings list */
 .recent-item {
     border: 1px solid #ddd;
     border-radius: 7px;
@@ -328,25 +399,30 @@ h3 {
     margin-bottom: 9px;
 }
 
+/* Entry title */
 .recent-item strong {
     display: block;
     margin-bottom: 4px;
 }
 
+/* Entry date/time in grey */
 .recent-item span {
     font-size: 13px;
     color: #666;
 }
 
+/* Lets the big sightings table scroll sideways on small screens */
 .table-wrapper {
     overflow-x: auto;
 }
 
+/* The All Sightings table */
 table {
     width: 100%;
     border-collapse: collapse;
 }
 
+/* Table cells: padding and a thin line under each row */
 th,
 td {
     padding: 9px;
@@ -355,28 +431,107 @@ td {
     font-size: 13px;
 }
 
+/* Table header text is grey */
 th {
     color: #555;
 }
 
+/* Grey 'nothing here yet' message */
 .empty {
     color: #777;
     font-size: 14px;
 }
 
+/* Hides the real file picker (the Import Data label is shown instead) */
 .file-input {
     display: none;
 }
 
+/* Row of data buttons */
 .data-buttons {
     display: flex;
     gap: 8px;
 }
 
+/* Buttons in that row share the width */
 .data-buttons button {
     flex: 1;
 }
 
+/* Clickable title bar of a collapsible section (title on the left, arrow on the right) */
+.collapse-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Headings inside the collapsible title bar have no margin */
+.collapse-header h2,
+.collapse-header h3 {
+    margin: 0;
+}
+
+/* Space between the title bar and the contents while a section is open */
+.collapse-header.open {
+    margin-bottom: 12px;
+}
+
+/* The little ▾ / ▸ arrow on the right of a collapsible title */
+.collapse-arrow {
+    color: #666;
+    font-size: 16px;
+    padding-left: 10px;
+}
+
+/* Charts scale to the width of their card */
+.chart-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+/* Row of colored squares explaining a chart */
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: #444;
+}
+
+/* One square + name in a legend */
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* The colored square in a legend */
+.legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    display: inline-block;
+}
+
+/* Camera dropdown at the top of the Charts page */
+.chart-filter {
+    margin-bottom: 18px;
+    max-width: 320px;
+}
+
+/* Style of that dropdown */
+.chart-filter select {
+    width: 100%;
+    padding: 9px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+}
+
+/* Activity-by-hour chart: 24 touching columns sitting on a baseline */
 .hour-chart {
     display: flex;
     align-items: flex-end;
@@ -385,6 +540,7 @@ th {
     border-bottom: 1px solid #bbb;
 }
 
+/* One hour's column slot */
 .hour-col {
     flex: 1;
     height: 100%;
@@ -392,24 +548,29 @@ th {
     align-items: flex-end;
 }
 
+/* The bar inside an hour slot */
 .hour-bar {
     width: 100%;
     background: #1f4d2b;
 }
 
+/* Every second bar is a slightly different green so touching bars can be told apart */
 .hour-col:nth-child(even) .hour-bar {
     background: #2a6a3b;
 }
 
+/* Bar lights up when you hover over it */
 .hour-col:hover .hour-bar {
     background: #3f9a5b;
 }
 
+/* Row of hour labels under the chart */
 .hour-labels {
     display: flex;
     margin-top: 5px;
 }
 
+/* One hour label (only every third one has text) */
 .hour-label {
     flex: 1;
     font-size: 10px;
@@ -417,43 +578,54 @@ th {
     white-space: nowrap;
 }
 
+/* Tablet-size screens: fewer columns and stacked cards */
 @media (max-width: 1000px) {
+    /* Grid of the small number boxes at the top of the dashboard */
     .stats {
         grid-template-columns: repeat(2, 1fr);
     }
 
+    /* Two-column grid that holds the dashboard / chart cards */
     .dashboard-grid {
         grid-template-columns: 1fr;
     }
 
+    /* A card that spans both columns */
     .wide {
         grid-column: auto;
     }
 }
 
+/* Phone-size screens: tighter spacing, sidebar goes above the map */
 @media (max-width: 700px) {
+    /* Green top bar holding the title and the Drive / Export / Import buttons */
     header {
         padding: 12px;
     }
 
+    /* The app title in the top bar */
     header h1 {
         font-size: 18px;
     }
 
+    /* small screens: .header-buttons button */
     .header-buttons button {
         font-size: 11px;
         padding: 7px;
     }
 
+    /* Each tab button: transparent with white text */
     .nav button {
         flex: 1;
         padding: 10px;
     }
 
+    /* Map page layout: sidebar on the left, map on the right */
     .app {
         flex-direction: column;
     }
 
+    /* The scrolling left panel on the Map page */
     .sidebar {
         width: 100%;
         height: 370px;
@@ -461,22 +633,27 @@ th {
         border-bottom: 1px solid #ddd;
     }
 
+    /* The map itself fills the rest of the space */
     #map {
         height: calc(100vh - 475px);
     }
 
+    /* Scrolling page area used by Dashboard and Charts */
     .dashboard {
         padding: 15px;
     }
 
+    /* Grid of the small number boxes at the top of the dashboard */
     .stats {
         gap: 10px;
     }
 
+    /* One number box (label, big value, detail) */
     .stat {
         padding: 13px;
     }
 
+    /* Big green number in a number box */
     .stat-value {
         font-size: 22px;
     }
@@ -486,8 +663,10 @@ th {
 
 <body>
 
+<!-- React draws the whole app (tabs, dashboard, charts, map) inside this empty div -->
 <div id="root"></div>
 
+<!-- Safety net script -->
 <script>
 // If the app ever crashes, show the error instead of a blank page.
 window.addEventListener("error", function(event) {
@@ -507,41 +686,67 @@ window.addEventListener("error", function(event) {
 });
 </script>
 
+<!-- Libraries, loaded from the internet (the service worker caches them for offline use) -->
+<!-- React: builds the user interface -->
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<!-- React DOM: puts React output on the page -->
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<!-- Leaflet: the interactive map -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- leaflet.heat: draws the heat map layer -->
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<!-- Google Identity Services: the "Connect Google Drive" sign-in -->
 <script src="https://accounts.google.com/gsi/client"></script>
 
 <script>
 
-const e = React.createElement;
-const useState = React.useState;
-const useEffect = React.useEffect;
-const useRef = React.useRef;
+// ===================================================================
+// DEER TRAIL CAM SCORER - application code
+//
+// How this file is organised (top to bottom):
+//   1. Small helpers: saved colors, deer directions, scoring, sunrise/sunset
+//   2. Collapsible sections and the SVG chart drawing functions
+//   3. Stand / layer / hour / direction helpers
+//   4. Loading and saving data in this device's localStorage
+//   5. Google Drive sync (sign-in and the Drive web calls)
+//   6. App(): the main screen - state, map code, handlers, and the pages
+// ===================================================================
+//
+// Shorthand names for React features used everywhere below
+const e = React.createElement;  // e(tag, props, ...children) builds one piece of the page
+const useState = React.useState;  // hook: a value that redraws the page when it changes
+const useEffect = React.useEffect;  // hook: run code after drawing, or when chosen values change
+const useRef = React.useRef;  // hook: a box that remembers a value without causing a redraw
 
-const CAMERA_KEY = "deerCameras";
-const TRAIL_KEY = "deerTrails";
-const COLORS_KEY = "deerMapColors";
-const STAND_KEY = "deerStands";
-const LAYERS_KEY = "deerMapLayers";
+// localStorage keys: the names this app saves its data under on your device
+const CAMERA_KEY = "deerCameras";  // cameras and their sightings
+const TRAIL_KEY = "deerTrails";  // deer trails
+const COLORS_KEY = "deerMapColors";  // map color choices
+const STAND_KEY = "deerStands";  // hunting stands
+const LAYERS_KEY = "deerMapLayers";  // which map layers (trails, stands) are switched on
 
+// Starting map colors (the Reset Colors button returns to these)
 const DEFAULT_COLORS = {
-    camera: "#ff0000",
-    cameraOutline: "#ffffff",
-    trail: "#ffff00",
-    stand: "#ff9800"
+    camera: "#ff0000",  // camera dot fill
+    cameraOutline: "#ffffff",  // camera dot outline
+    trail: "#ffff00",  // deer trail lines
+    stand: "#ff9800"  // stand triangles
 };
 
+// Reads the saved map colors, falling back to the defaults for any that are missing
 function getColors() {
     try {
+        // Read the saved colors text and turn it into an object
         const saved = JSON.parse(localStorage.getItem(COLORS_KEY));
+        // Saved colors win; anything not saved uses the default
         return { ...DEFAULT_COLORS, ...(saved || {}) };
     } catch {
+        // Nothing saved (or unreadable): use the defaults
         return { ...DEFAULT_COLORS };
     }
 }
 
+// The 8 compass directions used for 'Direction of Travel' (value is stored, label/arrow are shown)
 const DIRECTIONS = [
     { value: "N", label: "North", arrow: "↑" },
     { value: "NE", label: "Northeast", arrow: "↗" },
@@ -553,10 +758,13 @@ const DIRECTIONS = [
     { value: "NW", label: "Northwest", arrow: "↖" }
 ];
 
+// Turns a stored direction like 'NE' into display text like '↗ Northeast'
 function directionText(value) {
+    // Look up the direction whose value matches
     const found = DIRECTIONS.find(function(d) {
         return d.value === value;
     });
+    // Show arrow + name, or nothing if it wasn't found
     return found ? found.arrow + " " + found.label : "";
 }
 
@@ -564,33 +772,42 @@ function directionText(value) {
 // A camera's score is the sum of its sightings' weights. Each sighting is worth:
 //   number of deer x deer type weight x shooting-hours multiplier x age decay
 // Change the numbers below to tune it.
+// Numbers that control the camera score. Edit these to tune how scoring works.
 const SCORE_CONFIG = {
-    halfLifeDays: 7,            // a sighting counts half as much after this many days
+    halfLifeDays: 7,            // a sighting counts half as much after this many days  // a sighting counts half as much after this many days
     typeWeights: {
-        "Big Buck": 8,
-        Buck: 4,
-        Doe: 2,
-        Fawn: 1,
-        Unknown: 1
+        "Big Buck": 8,  // points per deer for a big buck
+        Buck: 4,  // points per deer for a regular buck
+        Doe: 2,  // points per deer for a doe
+        Fawn: 1,  // points per deer for a fawn
+        Unknown: 1  // points per deer when the type is unknown
     },
-    shootingMultiplier: 2,      // sightings during shooting hours
-    otherMultiplier: 1,         // sightings outside shooting hours
-    shootingBufferMinutes: 30   // shooting hours = sunrise - buffer to sunset + buffer
+    shootingMultiplier: 2,      // sightings during shooting hours  // sightings during shooting hours are multiplied by this
+    otherMultiplier: 1,         // sightings outside shooting hours  // sightings outside shooting hours are multiplied by this
+    shootingBufferMinutes: 30   // shooting hours = sunrise - buffer to sunset + buffer  // shooting hours start this long before sunrise and end this long after sunset
 };
 
 // Sunrise or sunset as a UTC timestamp (ms) for a calendar date and location.
+// Works out sunrise or sunset for a date and location using the standard 'Almanac for Computers' method.
+// Returns the moment as a UTC timestamp (milliseconds), or null if the sun never rises/sets that day.
 function sunEvent(year, month0, day, lat, lng, isRise) {
 
+    // Multiply degrees by this to get radians
     const rad = Math.PI / 180;
 
+    // Day number of the year (Jan 1 = 1)
     const dayOfYear = Math.floor(
         (Date.UTC(year, month0, day) - Date.UTC(year, 0, 0)) / 86400000
     );
 
+    // Longitude expressed in hours (the Earth turns 15 degrees per hour)
     const lngHour = lng / 15;
+    // Approximate time of the event in days
     const t = dayOfYear + ((isRise ? 6 : 18) - lngHour) / 24;
+    // The sun's mean anomaly (where it is in its orbit)
     const M = 0.9856 * t - 3.289;
 
+    // The sun's true longitude in the sky
     let L = M +
         1.916 * Math.sin(M * rad) +
         0.020 * Math.sin(2 * M * rad) +
@@ -598,36 +815,47 @@ function sunEvent(year, month0, day, lat, lng, isRise) {
 
     L = ((L % 360) + 360) % 360;
 
+    // Right ascension, then fixed to be in the same quadrant as L and converted to hours
     let RA = Math.atan(0.91764 * Math.tan(L * rad)) / rad;
     RA = ((RA % 360) + 360) % 360;
     RA += Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90;
     RA = RA / 15;
 
+    // The sun's declination (how far north/south of the equator it is)
     const sinDec = 0.39782 * Math.sin(L * rad);
     const cosDec = Math.cos(Math.asin(sinDec));
 
+    // Cosine of the sun's hour angle for sunrise/sunset (90.833 degrees accounts for atmosphere)
     const cosH =
         (Math.cos(90.833 * rad) - sinDec * Math.sin(lat * rad)) /
         (cosDec * Math.cos(lat * rad));
 
+    // Sun never rises or never sets on this day at this latitude
     if (cosH > 1 || cosH < -1) return null;
 
+    // Hour angle: use the morning side for sunrise, the evening side for sunset, then convert to hours
     let H = isRise
         ? 360 - Math.acos(cosH) / rad
         : Math.acos(cosH) / rad;
 
     H = H / 15;
 
+    // Local mean time of the event, kept between 0 and 24 hours
     let T = H + RA - 0.06571 * t - 6.622;
     T = ((T % 24) + 24) % 24;
 
+    // Convert local mean time to UTC and return it as a timestamp
     return Date.UTC(year, month0, day) + (T - lngHour) * 3600000;
 }
 
+// True if a sighting happened during shooting hours (30 min before sunrise to 30 min after sunset)
+// at the camera's location on that date.
 function isShootingTime(sighting, camera) {
 
+    // Without a date and time we can't tell, so count it as outside shooting hours
     if (!sighting.date || !sighting.time) return false;
 
+    // Split '2026-09-28' and '06:45' into numbers
     const dateParts = sighting.date.split("-").map(Number);
     const timeParts = sighting.time.split(":").map(Number);
 
@@ -637,33 +865,43 @@ function isShootingTime(sighting, camera) {
     const hh = timeParts[0];
     const mm = timeParts[1] || 0;
 
+    // Bad date/time text: not shooting hours
     if (![y, m, d, hh, mm].every(Number.isFinite)) return false;
 
+    // The sighting moment (in this device's time zone)
     const when = new Date(y, m, d, hh, mm).getTime();
 
+    // Sunrise and sunset at the camera for that date
     const rise = sunEvent(y, m, d, camera.lat, camera.lng, true);
     const set = sunEvent(y, m, d, camera.lat, camera.lng, false);
 
+    // No sunrise/sunset that day (extreme latitudes): fall back to 6 AM - 7 PM
     if (rise === null || set === null) {
         return hh >= 6 && hh < 19;
     }
 
+    // The 30 minute buffer, in milliseconds
     const buffer = SCORE_CONFIG.shootingBufferMinutes * 60000;
 
+    // Inside the window if after (sunrise - buffer) and before (sunset + buffer)
     return when >= rise - buffer && when <= set + buffer;
 }
 
+// Score for ONE sighting = number of deer x type points x shooting-hours multiplier x age decay
 function sightingScore(sighting, camera, now) {
 
+    // Points per deer for this type (unknown types count as 1)
     const typeWeight =
         SCORE_CONFIG.typeWeights[sighting.deerType] !== undefined
             ? SCORE_CONFIG.typeWeights[sighting.deerType]
             : 1;
 
+    // Bonus multiplier if it happened during shooting hours
     const timeWeight = isShootingTime(sighting, camera)
         ? SCORE_CONFIG.shootingMultiplier
         : SCORE_CONFIG.otherMultiplier;
 
+    // How many days ago the sighting was (0 if there is no date)
     let ageDays = 0;
 
     if (sighting.date) {
@@ -676,13 +914,17 @@ function sightingScore(sighting, camera, now) {
         }
     }
 
+    // Halve the value every 'halfLifeDays' days: 0.5 ^ (age / halfLife)
     const decay = Math.pow(0.5, ageDays / SCORE_CONFIG.halfLifeDays);
 
+    // Put it all together
     return Number(sighting.number || 1) * typeWeight * timeWeight * decay;
 }
 
+// A camera's score is the sum of the scores of all of its sightings
 function cameraScore(camera) {
 
+    // Current moment, so every sighting is aged against the same time
     const now = Date.now();
 
     return camera.sightings.reduce(function(total, sighting) {
@@ -690,7 +932,663 @@ function cameraScore(camera) {
     }, 0);
 }
 
+// ---- Collapsible sections ----
+const COLLAPSE_KEY = "deerCollapsed";  // where open/closed choices are saved
+
+// Reads which collapsible sections the user closed last time (an object like { 'chart-daily': true })
+function getCollapsedMap() {
+    try {
+        return JSON.parse(localStorage.getItem(COLLAPSE_KEY)) || {};
+    } catch {
+        return {};
+    }
+}
+
+// A card or section with a clickable header that hides/shows its contents.
+// props: id (remembers open/closed), title, tag (h2/h3), className, children
+function Collapsible(props) {
+
+    // The id is how this section's open/closed choice is remembered
+    const id = props.id;
+
+    // Start open, unless a saved choice says it was closed
+    const [open, setOpen] = useState(function() {
+        const saved = getCollapsedMap()[id];
+        return saved === undefined ? props.defaultOpen !== false : !saved;
+    });
+
+    // Called when the title bar is clicked: flip open/closed and save the choice
+    function toggle() {
+        // The new state (opposite of the current one)
+        const next = !open;
+        // Redraw with the new state
+        setOpen(next);
+        // Load the saved choices, update this section's entry, and save them again
+        const map = getCollapsedMap();
+        map[id] = !next;
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify(map));
+    }
+
+    return e(
+        "div",
+        {
+            // The outer box takes whatever class the caller gave it (card, section, dashboard-card...)
+            className: props.className || "",
+            style: props.style
+        },
+
+        e(
+            "div",
+            {
+                // The clickable title bar
+                className: "collapse-header" + (open ? " open" : ""),
+                onClick: toggle
+            },
+            // The title text (as an h2 or h3 heading)
+            e(props.tag || "h3", null, props.title),
+            // Arrow: ▾ when open, ▸ when closed
+            e("span", { className: "collapse-arrow" }, open ? "▾" : "▸")
+        ),
+
+        open
+            // The contents are only drawn while the section is open
+            ? e("div", { className: "collapse-body" }, props.children)
+            : null
+    );
+}
+
+// ---- Chart helpers (all charts are drawn as inline SVG, no libraries) ----
+// One color per deer type, used by all the charts
+const TYPE_COLORS = {
+    "Big Buck": "#7b1e1e",
+    Buck: "#c0392b",
+    Doe: "#2e7d32",
+    Fawn: "#f9a825",
+    Unknown: "#757575"
+};
+
+// The deer types in the order they are stacked and listed in charts
+const CHART_TYPES = ["Big Buck", "Buck", "Doe", "Fawn", "Unknown"];
+// Day names in the same order JavaScript numbers days (0 = Sunday)
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Grey message shown in place of a chart that has no data yet
+function chartNote(text) {
+    return e("div", { className: "empty" }, text);
+}
+
+// "2026-09-28" -> a Date at noon that day (noon avoids daylight-saving edge cases)
+function parseDay(dateString) {
+    // Split '2026-09-28' into [2026, 9, 28]
+    const p = dateString.split("-").map(Number);
+    return new Date(p[0], p[1] - 1, p[2], 12, 0, 0);
+}
+
+// Turns a Date back into 'YYYY-MM-DD' text (used as a lookup key)
+function dayKey(date) {
+    return date.getFullYear() + "-" +
+        String(date.getMonth() + 1).padStart(2, "0") + "-" +
+        String(date.getDate()).padStart(2, "0");
+}
+
+// Monday of the week a date falls in
+function weekStart(date) {
+    const copy = new Date(date.getTime());
+    // Step back to Monday (Sunday counts as the end of the week)
+    copy.setDate(copy.getDate() - ((copy.getDay() + 6) % 7));
+    return copy;
+}
+
+// Rounds a maximum up to a tidy number for axis labels
+function niceMax(value) {
+    // Small numbers just round up to a whole number
+    if (value <= 5) return Math.max(1, Math.ceil(value));
+    // Size of the number: 1, 10, 100...
+    const power = Math.pow(10, Math.floor(Math.log10(value)));
+    const n = value / power;
+    // Round up to 1, 2, 5 or 10 times that size
+    const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return nice * power;
+}
+
+// Adds up the 'number of deer' across a list of sightings
+function sumNumber(list) {
+    return list.reduce(function(total, sighting) {
+        return total + Number(sighting.number || 0);
+    }, 0);
+}
+
+// Draws the colored squares + names shown under some charts
+function legendRow(items) {
+    return e(
+        "div",
+        { className: "legend" },
+        items.map(function(item) {
+            return e(
+                "div",
+                { className: "legend-item", key: item.label },
+                e("span", {
+                    className: "legend-swatch",
+                    style: { background: item.color }
+                }),
+                item.label +
+                (item.value !== undefined ? " (" + item.value + ")" : "")
+            );
+        })
+    );
+}
+
+// Vertical bars. items = [{label, value, title}]
+function columnChart(items, color, labelEvery) {
+
+    // Chart size and margins: W/H = total, L/R/T/B = left/right/top/bottom space
+    const W = 640, H = 220, L = 36, R = 8, T = 10, B = 26;
+    const plotW = W - L - R;
+    const plotH = H - T - B;
+
+    // The tallest bar decides the scale of the y-axis
+    const max = niceMax(Math.max.apply(
+        null,
+        items.map(function(item) { return item.value; }).concat([1])
+    ));
+
+    // Width of each bar slot
+    const barW = plotW / items.length;
+    const kids = [];
+
+    // horizontal grid lines with value labels
+    // Draw 5 horizontal grid lines with their value labels
+    for (let g = 0; g <= 4; g++) {
+        const y = T + plotH - plotH * g / 4;
+        kids.push(e("line", { key: "g" + g, x1: L, x2: W - R, y1: y, y2: y, stroke: "#e3e3e3" }));
+        kids.push(e("text", { key: "t" + g, x: L - 5, y: y + 3, textAnchor: "end", fontSize: 10, fill: "#666" }, Math.round(max * g / 4 * 10) / 10));
+    }
+
+    // the bars and their x labels
+    // Draw one bar per item, plus its label underneath every few bars
+    items.forEach(function(item, i) {
+
+        // Bar height in proportion to its value
+        const h = plotH * item.value / max;
+
+        kids.push(e(
+            "rect",
+            {
+                key: "b" + i,
+                x: L + i * barW + 0.5,
+                y: T + plotH - h,
+                width: Math.max(barW - 1, 1),
+                height: h,
+                fill: color
+            },
+            e("title", null, item.title || (item.label + ": " + item.value))
+        ));
+
+        if (i % labelEvery === 0) {
+            kids.push(e("text", { key: "l" + i, x: L + i * barW + barW / 2, y: H - 8, textAnchor: "middle", fontSize: 10, fill: "#666" }, item.label));
+        }
+    });
+
+    // Wrap all the shapes in an SVG that scales to the card width
+    return e("svg", { viewBox: "0 0 " + W + " " + H, className: "chart-svg" }, kids);
+}
+
+// Line with a filled area underneath. points = [{label, value}]
+function lineChart(points, color) {
+
+    // Chart size and margins
+    const W = 640, H = 220, L = 36, R = 12, T = 10, B = 26;
+    const plotW = W - L - R;
+    const plotH = H - T - B;
+
+    const max = niceMax(Math.max.apply(
+        null,
+        points.map(function(point) { return point.value; }).concat([1])
+    ));
+
+    // Horizontal distance between points
+    const step = points.length > 1 ? plotW / (points.length - 1) : 0;
+
+    // Turn each point into an x,y position on the chart
+    const coords = points.map(function(point, i) {
+        return [
+            L + (points.length > 1 ? i * step : plotW / 2),
+            T + plotH - plotH * point.value / max
+        ];
+    });
+
+    // Text form of the line and the filled area under it (SVG 'points' format)
+    const line = coords.map(function(c) { return c[0] + "," + c[1]; }).join(" ");
+    const area = L + "," + (T + plotH) + " " + line + " " + coords[coords.length - 1][0] + "," + (T + plotH);
+
+    const kids = [];
+
+    for (let g = 0; g <= 4; g++) {
+        const y = T + plotH - plotH * g / 4;
+        kids.push(e("line", { key: "g" + g, x1: L, x2: W - R, y1: y, y2: y, stroke: "#e3e3e3" }));
+        kids.push(e("text", { key: "t" + g, x: L - 5, y: y + 3, textAnchor: "end", fontSize: 10, fill: "#666" }, Math.round(max * g / 4 * 10) / 10));
+    }
+
+    // Soft filled area under the line, then the line itself
+    kids.push(e("polygon", { key: "area", points: area, fill: color, fillOpacity: 0.15 }));
+    kids.push(e("polyline", { key: "line", points: line, fill: "none", stroke: color, strokeWidth: 2.5 }));
+
+    // label roughly five evenly spaced points along the bottom
+    // Only label about five points so the labels don't overlap
+    const every = Math.max(1, Math.ceil(points.length / 5));
+
+    points.forEach(function(point, i) {
+        kids.push(e("circle", { key: "p" + i, cx: coords[i][0], cy: coords[i][1], r: 3, fill: color }, e("title", null, point.label + ": " + point.value)));
+        if (i % every === 0 || i === points.length - 1) {
+            kids.push(e("text", { key: "l" + i, x: coords[i][0], y: H - 8, textAnchor: "middle", fontSize: 10, fill: "#666" }, point.label));
+        }
+    });
+
+    return e("svg", { viewBox: "0 0 " + W + " " + H, className: "chart-svg" }, kids);
+}
+
+// Donut with a legend. items = [{label, value, color}]
+function donutChart(items, centerLabel) {
+
+    // Only slices with something in them are drawn
+    const shown = items.filter(function(item) { return item.value > 0; });
+    // Total used to work out each slice's share
+    const total = shown.reduce(function(t, item) { return t + item.value; }, 0);
+
+    if (!total) return chartNote("No data yet.");
+
+    // Donut center and its outer / inner radius
+    const cx = 100, cy = 100, outer = 80, inner = 50;
+    // Start drawing at 12 o'clock
+    let angle = -Math.PI / 2;
+
+    // Position on the circle for an angle and a radius
+    function point(a, radius) {
+        return [cx + radius * Math.cos(a), cy + radius * Math.sin(a)];
+    }
+
+    // One curved slice per item, sized by its share of the total
+    const slices = shown.map(function(item, idx) {
+
+        const fraction = item.value / total;
+        const tip = item.label + ": " + item.value + " (" + Math.round(fraction * 100) + "%)";
+
+        // a single slice is a full ring (an arc can't start and end at the same point)
+        // A single 100% slice is drawn as a full ring
+        if (fraction >= 0.9999) {
+            return e("circle", { key: idx, cx: cx, cy: cy, r: (outer + inner) / 2, fill: "none", stroke: item.color, strokeWidth: outer - inner }, e("title", null, tip));
+        }
+
+        // Where this slice ends
+        const next = angle + fraction * 2 * Math.PI;
+        const a = point(angle, outer);
+        const b = point(next, outer);
+        const c = point(next, inner);
+        const d = point(angle, inner);
+        // SVG needs to know if the arc is more than half a circle
+        const large = fraction > 0.5 ? 1 : 0;
+
+        // Path: outer arc, line to the inner edge, inner arc back, close
+        const path =
+            "M" + a[0] + " " + a[1] +
+            " A" + outer + " " + outer + " 0 " + large + " 1 " + b[0] + " " + b[1] +
+            " L" + c[0] + " " + c[1] +
+            " A" + inner + " " + inner + " 0 " + large + " 0 " + d[0] + " " + d[1] + " Z";
+
+        angle = next;
+
+        return e("path", { key: idx, d: path, fill: item.color }, e("title", null, tip));
+    });
+
+    return e(
+        "div",
+        null,
+        e(
+            "svg",
+            { viewBox: "0 0 200 200", className: "chart-svg", style: { maxWidth: "240px", margin: "0 auto" } },
+            slices,
+            e("text", { x: cx, y: cy + 5, textAnchor: "middle", fontSize: 22, fontWeight: "bold", fill: "#1f4d2b" }, total),
+            e("text", { x: cx, y: cy + 22, textAnchor: "middle", fontSize: 10, fill: "#666" }, centerLabel)
+        ),
+        legendRow(shown.map(function(item) {
+            return { label: item.label, color: item.color, value: item.value };
+        }))
+    );
+}
+
+// Days of the week (rows) by hour of the day (columns), darker = more deer
+function hourGridChart(sightings) {
+
+    // Grid of counts: 7 days of the week x 24 hours
+    const grid = [];
+    for (let d = 0; d < 7; d++) grid.push(new Array(24).fill(0));
+
+    let any = false;
+
+    sightings.forEach(function(sighting) {
+
+        const hour = sightingHour(sighting);
+
+        if (!sighting.date || hour === null) return;
+
+        grid[parseDay(sighting.date).getDay()][hour] += Number(sighting.number || 0);
+        any = true;
+    });
+
+    if (!any) return chartNote("No sightings with a date and time yet.");
+
+    // Biggest cell decides the darkest color
+    let max = 1;
+    grid.forEach(function(row) { row.forEach(function(v) { if (v > max) max = v; }); });
+
+    // Cell size and left/top space for labels
+    const cell = 22, left = 34, top = 6;
+    const W = left + 24 * cell + 4;
+    const H = top + 7 * cell + 22;
+    const kids = [];
+
+    // Draw each day's row: its name, then 24 cells shaded by how many deer
+    grid.forEach(function(row, d) {
+
+        kids.push(e("text", { key: "d" + d, x: left - 6, y: top + d * cell + 15, textAnchor: "end", fontSize: 10, fill: "#666" }, DAY_NAMES[d]));
+
+        row.forEach(function(value, h) {
+            kids.push(e(
+                "rect",
+                { key: d + "-" + h, x: left + h * cell, y: top + d * cell, width: cell - 1, height: cell - 1, fill: "#1f4d2b", fillOpacity: value ? 0.12 + 0.88 * value / max : 0.04 },
+                e("title", null, DAY_NAMES[d] + " " + hourLabel(h) + ": " + value + " deer")
+            ));
+        });
+    });
+
+    // Hour labels along the bottom, every 3 hours
+    for (let h = 0; h < 24; h += 3) {
+        kids.push(e("text", { key: "h" + h, x: left + h * cell + cell / 2, y: top + 7 * cell + 14, textAnchor: "middle", fontSize: 10, fill: "#666" }, hourShort(h)));
+    }
+
+    return e("svg", { viewBox: "0 0 " + W + " " + H, className: "chart-svg" }, kids);
+}
+
+// Compass rose: each wedge reaches further the more deer travelled that way
+function compassChart(sightings) {
+
+    // Deer counts per direction of travel
+    const counts = {};
+    let total = 0;
+
+    sightings.forEach(function(sighting) {
+        if (!DIRECTION_BEARINGS.hasOwnProperty(sighting.direction)) return;
+        const n = Number(sighting.number || 1);
+        counts[sighting.direction] = (counts[sighting.direction] || 0) + n;
+        total += n;
+    });
+
+    if (!total) return chartNote("No sightings with a direction of travel yet.");
+
+    // Compass center and the longest wedge length
+    const cx = 130, cy = 130, maxR = 90;
+    const max = Math.max.apply(null, Object.values(counts));
+    const kids = [];
+
+    // Three faint guide rings
+    [1 / 3, 2 / 3, 1].forEach(function(f, i) {
+        kids.push(e("circle", { key: "r" + i, cx: cx, cy: cy, r: maxR * f, fill: "none", stroke: "#e3e3e3" }));
+    });
+
+    // Screen position for a compass bearing (0 = up / north) at a distance from the center
+    function at(bearing, radius) {
+        const a = (bearing - 90) * Math.PI / 180;
+        return [cx + radius * Math.cos(a), cy + radius * Math.sin(a)];
+    }
+
+    // One wedge per direction, longer = more deer, with its letter label
+    DIRECTIONS.forEach(function(dir) {
+
+        const bearing = DIRECTION_BEARINGS[dir.value];
+        const count = counts[dir.value] || 0;
+        const label = at(bearing, maxR + 16);
+
+        if (count) {
+            const r = maxR * count / max;
+            const p1 = at(bearing - 20, r);
+            const p2 = at(bearing + 20, r);
+
+            kids.push(e(
+                "path",
+                { key: "w" + dir.value, d: "M" + cx + " " + cy + " L" + p1[0] + " " + p1[1] + " A" + r + " " + r + " 0 0 1 " + p2[0] + " " + p2[1] + " Z", fill: "#1f4d2b", fillOpacity: 0.75 },
+                e("title", null, dir.label + ": " + count + " deer")
+            ));
+        }
+
+        kids.push(e("text", { key: "t" + dir.value, x: label[0], y: label[1] + 4, textAnchor: "middle", fontSize: 12, fontWeight: "bold", fill: "#444" }, dir.value));
+    });
+
+    return e("svg", { viewBox: "0 0 260 260", className: "chart-svg", style: { maxWidth: "300px", margin: "0 auto" } }, kids);
+}
+
+// One horizontal stacked bar per camera, split by deer type
+function cameraTypeChart(sightings, cameras) {
+
+    // One row per camera: its deer counts split by type
+    const rows = cameras.map(function(camera) {
+
+        const mine = sightings.filter(function(s) { return s.cameraId === camera.id; });
+
+        const parts = CHART_TYPES.map(function(type) {
+            return { type: type, value: sumNumber(mine.filter(function(s) { return s.deerType === type; })) };
+        });
+
+        return { name: camera.name, parts: parts, total: sumNumber(mine) };
+
+    }).filter(function(row) { return row.total > 0; })
+      .sort(function(a, b) { return b.total - a.total; });
+
+    if (!rows.length) return chartNote("No sightings yet.");
+
+    // Chart width, space for camera names, and row height
+    const W = 640, labelW = 130, rowH = 28;
+    const max = Math.max.apply(null, rows.map(function(r) { return r.total; }));
+    // Longest possible bar (leaves room for the number at the end)
+    const barMax = W - labelW - 50;
+    const kids = [];
+
+    // Draw each camera: name, colored segments, then the total
+    rows.forEach(function(row, i) {
+
+        let x = labelW;
+        const y = i * rowH + 4;
+
+        kids.push(e("text", { key: "n" + i, x: labelW - 8, y: y + 15, textAnchor: "end", fontSize: 12, fill: "#444" }, row.name.length > 18 ? row.name.slice(0, 17) + "…" : row.name));
+
+        row.parts.forEach(function(part) {
+
+            if (!part.value) return;
+
+            const w = barMax * part.value / max;
+
+            kids.push(e("rect", { key: i + part.type, x: x, y: y, width: w, height: rowH - 8, fill: TYPE_COLORS[part.type] }, e("title", null, row.name + " — " + part.type + ": " + part.value)));
+
+            x += w;
+        });
+
+        kids.push(e("text", { key: "v" + i, x: x + 6, y: y + 15, fontSize: 11, fill: "#666" }, row.total));
+    });
+
+    return e(
+        "div",
+        null,
+        e("svg", { viewBox: "0 0 " + W + " " + (rows.length * rowH + 6), className: "chart-svg" }, kids),
+        legendRow(CHART_TYPES.map(function(type) { return { label: type, color: TYPE_COLORS[type] }; }))
+    );
+}
+
+// Deer per week over the last 12 weeks, stacked by type
+function weeklyTypeChart(sightings) {
+
+    const dated = sightings.filter(function(s) { return s.date; });
+
+    if (!dated.length) return chartNote("No sightings with dates yet.");
+
+    // The newest date with a sighting; the chart ends on that week
+    const latest = dated.map(function(s) { return s.date; }).sort().pop();
+    const lastWeek = weekStart(parseDay(latest));
+
+    // Build the last 12 weeks (oldest first)
+    const weeks = [];
+
+    for (let i = 11; i >= 0; i--) {
+        const d = new Date(lastWeek.getTime() - i * 7 * 86400000);
+        weeks.push({ key: dayKey(d), label: (d.getMonth() + 1) + "/" + d.getDate(), counts: {} });
+    }
+
+    // Quick lookup from a week's start date to its position
+    const lookup = {};
+    weeks.forEach(function(w, i) { lookup[w.key] = i; });
+
+    dated.forEach(function(s) {
+        const key = dayKey(weekStart(parseDay(s.date)));
+        if (!(key in lookup)) return;
+        const counts = weeks[lookup[key]].counts;
+        counts[s.deerType] = (counts[s.deerType] || 0) + Number(s.number || 0);
+    });
+
+    // Total deer in each week (to set the chart height)
+    const totals = weeks.map(function(w) {
+        return Object.values(w.counts).reduce(function(t, v) { return t + v; }, 0);
+    });
+
+    // Chart size and margins
+    const W = 640, H = 220, L = 36, R = 8, T = 10, B = 26;
+    const plotW = W - L - R;
+    const plotH = H - T - B;
+    const max = niceMax(Math.max.apply(null, totals.concat([1])));
+    const barW = plotW / weeks.length;
+    const kids = [];
+
+    for (let g = 0; g <= 4; g++) {
+        const y = T + plotH - plotH * g / 4;
+        kids.push(e("line", { key: "g" + g, x1: L, x2: W - R, y1: y, y2: y, stroke: "#e3e3e3" }));
+        kids.push(e("text", { key: "t" + g, x: L - 5, y: y + 3, textAnchor: "end", fontSize: 10, fill: "#666" }, Math.round(max * g / 4 * 10) / 10));
+    }
+
+    // Draw each week as a stack of colored blocks, one per deer type
+    weeks.forEach(function(week, i) {
+
+        let y = T + plotH;
+
+        CHART_TYPES.forEach(function(type) {
+
+            const value = week.counts[type] || 0;
+
+            if (!value) return;
+
+            const h = plotH * value / max;
+            y -= h;
+
+            kids.push(e("rect", { key: i + type, x: L + i * barW + 3, y: y, width: barW - 6, height: h, fill: TYPE_COLORS[type] }, e("title", null, "Week of " + week.label + " — " + type + ": " + value)));
+        });
+
+        kids.push(e("text", { key: "l" + i, x: L + i * barW + barW / 2, y: H - 8, textAnchor: "middle", fontSize: 10, fill: "#666" }, week.label));
+    });
+
+    return e(
+        "div",
+        null,
+        e("svg", { viewBox: "0 0 " + W + " " + H, className: "chart-svg" }, kids),
+        legendRow(CHART_TYPES.map(function(type) { return { label: type, color: TYPE_COLORS[type] }; }))
+    );
+}
+
+// Sightings per day over the 30 days ending at the latest sighting
+function dailyChart(sightings) {
+
+    const dated = sightings.filter(function(s) { return s.date; });
+
+    if (!dated.length) return chartNote("No sightings with dates yet.");
+
+    // The newest date with a sighting; the chart covers the 30 days ending there
+    const end = parseDay(dated.map(function(s) { return s.date; }).sort().pop());
+    // One entry per day, oldest first, starting at zero
+    const days = [];
+
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date(end.getTime() - i * 86400000);
+        days.push({ key: dayKey(d), label: (d.getMonth() + 1) + "/" + d.getDate(), value: 0 });
+    }
+
+    const lookup = {};
+    days.forEach(function(d, i) { lookup[d.key] = i; });
+
+    dated.forEach(function(s) {
+        if (s.date in lookup) days[lookup[s.date]].value += Number(s.number || 0);
+    });
+
+    return columnChart(
+        days.map(function(d) { return { label: d.label, value: d.value, title: d.label + ": " + d.value + " deer" }; }),
+        "#1f4d2b",
+        5
+    );
+}
+
+// Running total of deer seen, day by day
+function cumulativeChart(sightings) {
+
+    // Deer seen on each date
+    const totals = {};
+
+    sightings.forEach(function(s) {
+        if (!s.date) return;
+        totals[s.date] = (totals[s.date] || 0) + Number(s.number || 0);
+    });
+
+    // Dates in order (YYYY-MM-DD sorts correctly as text)
+    const dates = Object.keys(totals).sort();
+
+    if (!dates.length) return chartNote("No sightings with dates yet.");
+
+    // Running total that grows each day
+    let running = 0;
+
+    return lineChart(
+        dates.map(function(date) {
+            running += totals[date];
+            const d = parseDay(date);
+            return { label: (d.getMonth() + 1) + "/" + d.getDate(), value: running };
+        }),
+        "#2a6a3b"
+    );
+}
+
+// How many bucks had each number of antler points
+function antlerChart(sightings) {
+
+    // One counter per antler point count: 1 to 15, and 16 or more
+    const bins = new Array(16).fill(0);
+    let any = false;
+
+    sightings.forEach(function(s) {
+
+        if (!isBuckType(s.deerType) || !s.antlerPoints) return;
+
+        // Add this sighting's deer to its antler-point bin (16+ share the last bin)
+        bins[Math.min(Number(s.antlerPoints), 16) - 1] += Number(s.number || 1);
+        any = true;
+    });
+
+    if (!any) return chartNote("No bucks with antler points recorded yet.");
+
+    return columnChart(
+        bins.map(function(count, i) {
+            const label = i === 15 ? "16+" : String(i + 1);
+            return { label: label, value: count, title: label + " points: " + count };
+        }),
+        "#c0392b",
+        1
+    );
+}
+
 // ---- Stands, layers and deer-type helpers ----
+// Choices in the stand type dropdown
 const STAND_TYPES = [
     "Tree Stand",
     "Ladder Stand",
@@ -699,22 +1597,27 @@ const STAND_TYPES = [
     "Other"
 ];
 
+// True for both 'Buck' and 'Big Buck' (used wherever 'any buck' is meant)
 function isBuckType(type) {
     return type === "Buck" || type === "Big Buck";
 }
 
+// Does a deer type pass the heat map's filter? ('Buck' also includes big bucks)
 function matchesHeatFilter(type, filter) {
     if (filter === "All") return true;
     if (filter === "Buck") return isBuckType(type);
     return type === filter;
 }
 
+// Cleans a list of stands (from storage, Drive or a backup): fills in missing values and drops broken ones
 function sanitizeStands(list) {
 
+    // Not a list at all
     if (!Array.isArray(list)) return null;
 
     return list.map(function(stand) {
         return {
+            // Give a stand an id if it lost it
             id: stand.id || Date.now() + Math.random(),
             name: stand.name || "Stand",
             type: stand.type || "Other",
@@ -727,6 +1630,7 @@ function sanitizeStands(list) {
     });
 }
 
+// Loads the saved stands from this device (empty list if none)
 function getStands() {
     try {
         return sanitizeStands(
@@ -737,6 +1641,7 @@ function getStands() {
     }
 }
 
+// Loads which map layers are switched on (both default to on)
 function getLayers() {
     try {
         const saved = JSON.parse(localStorage.getItem(LAYERS_KEY)) || {};
@@ -749,8 +1654,10 @@ function getLayers() {
     }
 }
 
+// The orange triangle used for stands on the map, drawn as an SVG picture
 function standIcon(colors) {
 
+    // SVG picture of the triangle (fill and outline come from the color settings)
     const html =
         '<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">' +
         '<path d="M15 3 L27 25 L3 25 Z" fill="' + colors.stand + '" ' +
@@ -768,6 +1675,7 @@ function standIcon(colors) {
 }
 
 // ---- Hours, timelapse and direction helpers ----
+// 0-23 -> '12 AM', '9 AM', '12 PM', '5 PM'
 function hourLabel(hour) {
     if (hour === 0) return "12 AM";
     if (hour < 12) return hour + " AM";
@@ -775,6 +1683,7 @@ function hourLabel(hour) {
     return (hour - 12) + " PM";
 }
 
+// 0-23 -> short label like '9a' or '5p' (used on small chart axes)
 function hourShort(hour) {
     if (hour === 0) return "12a";
     if (hour < 12) return hour + "a";
@@ -782,6 +1691,7 @@ function hourShort(hour) {
     return (hour - 12) + "p";
 }
 
+// The hour (0-23) of a sighting's time, or null if it has none
 function sightingHour(sighting) {
 
     if (!sighting.time) return null;
@@ -793,6 +1703,7 @@ function sightingHour(sighting) {
         : null;
 }
 
+// Compass bearing in degrees for each direction (0 = north, 90 = east...)
 const DIRECTION_BEARINGS = {
     N: 0, NE: 45, E: 90, SE: 135,
     S: 180, SW: 225, W: 270, NW: 315
@@ -800,38 +1711,55 @@ const DIRECTION_BEARINGS = {
 
 // Average travel direction (degrees, 0 = north) weighted by number of deer.
 // Returns null if there are no directions, or they cancel each other out.
+// Average direction the deer travel past a camera, weighted by number of deer.
+// Uses vector math so that, for example, NW and NE average out to N.
+// Returns degrees (0 = north) or null when there is no data or the directions cancel out.
 function averageBearing(camera) {
 
+    // Running east-west total
     let x = 0;
+    // Running north-south total
     let y = 0;
+    // Total deer that had a direction
     let total = 0;
 
     camera.sightings.forEach(function(sighting) {
 
+        // Degrees for this sighting's direction
         const bearing = DIRECTION_BEARINGS[sighting.direction];
 
+        // Skip sightings with no direction
         if (bearing === undefined) return;
 
+        // More deer = more influence on the average
         const weight = Number(sighting.number || 1);
 
+        // Add this sighting's east-west part
         x += weight * Math.sin(bearing * Math.PI / 180);
+        // Add this sighting's north-south part
         y += weight * Math.cos(bearing * Math.PI / 180);
         total += weight;
     });
 
+    // No directions recorded
     if (!total) return null;
 
+    // Directions mostly cancel each other, so there is no real 'average' to show
     if (Math.hypot(x, y) / total < 0.15) return null;
 
+    // Convert the combined vector back into a compass bearing between 0 and 360
     return (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
 }
 
+// Nearest of the 8 compass directions for a bearing in degrees
 function bearingDirection(bearing) {
     return DIRECTIONS[Math.round(bearing / 45) % 8];
 }
 
+// The arrow drawn beside a camera, rotated to point the way the deer travel
 function arrowIcon(bearing, colors) {
 
+    // SVG picture of the arrow, rotated by the bearing
     const html =
         '<svg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">' +
         '<g transform="rotate(' + bearing + ' 30 30)">' +
@@ -848,14 +1776,17 @@ function arrowIcon(bearing, colors) {
     });
 }
 
+// Loads the saved cameras from this device, cleaning up each one; returns [] if nothing valid is saved
 function getCameras() {
     try {
+        // Read the saved text and turn it into a list
         const data = JSON.parse(localStorage.getItem(CAMERA_KEY));
 
         if (!Array.isArray(data)) {
             return [];
         }
 
+        // Make sure every camera has an id, name, numbers for its position, and a sightings list
         return data.map(function(camera) {
             return {
                 id: camera.id || Date.now(),
@@ -866,6 +1797,7 @@ function getCameras() {
                     ? camera.sightings
                     : []
             };
+        // Drop cameras with a broken position
         }).filter(function(camera) {
             return Number.isFinite(camera.lat) &&
                    Number.isFinite(camera.lng);
@@ -876,6 +1808,7 @@ function getCameras() {
     }
 }
 
+// Loads the saved deer trails (a list of named lines); returns [] if none
 function getTrails() {
     try {
         const data = JSON.parse(localStorage.getItem(TRAIL_KEY));
@@ -891,6 +1824,7 @@ function getTrails() {
     }
 }
 
+// Saves cameras, trails and stands to this device (called whenever any of them change)
 function saveData(cameras, trails, stands) {
     localStorage.setItem(
         CAMERA_KEY,
@@ -915,43 +1849,56 @@ function saveData(cameras, trails, stands) {
 //    (Application type: Web application) with this site's URL added
 //    under "Authorized JavaScript origins".
 // 2. Paste that Client ID below.
+// Your Google OAuth Client ID goes here (or enter it with the gear button in the header)
 const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID_HERE.apps.googleusercontent.com";
 
+// Permission we ask Google for: a private app-data area in your Drive (not visible in your normal Drive files)
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
+// Name of the backup file stored in that private area
 const DRIVE_FILE_NAME = "deer-trail-cam-data.json";
-const LAST_MODIFIED_KEY = "deerLastModified";
-const CLIENT_ID_KEY = "deerGoogleClientId";
-const SYNCED_AT_KEY = "deerSyncedAt";
-const SYNCED_REMOTE_KEY = "deerSyncedRemote";
-const WAS_CONNECTED_KEY = "deerDriveWasConnected";
+const LAST_MODIFIED_KEY = "deerLastModified";  // when data was last edited on this device
+const CLIENT_ID_KEY = "deerGoogleClientId";  // a Client ID typed into the app
+const SYNCED_AT_KEY = "deerSyncedAt";  // when this device last finished a sync
+const SYNCED_REMOTE_KEY = "deerSyncedRemote";  // the Drive file's modified time at that last sync
+const WAS_CONNECTED_KEY = "deerDriveWasConnected";  // remembers you connected before, to show 'Not syncing' after a reload
 
+// Time (on this device) of the last successful sync, 0 if never
 function getSyncedAt() {
     return Number(localStorage.getItem(SYNCED_AT_KEY)) || 0;
 }
 
 // A Client ID typed into the app (gear button) wins over the one pasted above.
+// Use the Client ID typed into the app if there is one, otherwise the one in this file
 function getClientId() {
     return localStorage.getItem(CLIENT_ID_KEY) || GOOGLE_CLIENT_ID;
 }
 
+// Quick format check: digits, a dash, letters/digits, then .apps.googleusercontent.com
 function clientIdLooksValid(id) {
     return /^\d+-[\w-]+\.apps\.googleusercontent\.com$/.test(id || "");
 }
 
+// Google sign-in helper object (created once Google's script has loaded)
 let driveTokenClient = null;
+// Temporary pass from Google; it is only kept in memory, so it is gone after a reload
 let driveAccessToken = null;
+// Id of our backup file in Drive once we have found or created it
 let driveFileId = null;
 
+// Time of the last edit made on this device
 function getLastModified() {
     return Number(localStorage.getItem(LAST_MODIFIED_KEY)) || 0;
 }
 
+// Record that the data was just edited on this device
 function setLastModified(timestamp) {
     localStorage.setItem(LAST_MODIFIED_KEY, String(timestamp));
 }
 
+// Sets up Google sign-in. Returns false if Google's script hasn't loaded yet.
 function initDriveTokenClient(callback, errorCallback) {
 
+    // Google's sign-in script isn't ready yet
     if (!window.google || !window.google.accounts) {
         return false;
     }
@@ -966,6 +1913,7 @@ function initDriveTokenClient(callback, errorCallback) {
     return true;
 }
 
+// Opens Google's sign-in / permission popup and calls 'callback' with the result
 function requestDriveAccess(callback) {
 
     if (!driveTokenClient) return;
@@ -984,6 +1932,7 @@ function requestDriveAccess(callback) {
     });
 }
 
+// Tells Google to cancel our pass and forgets it
 function driveSignOut() {
 
     if (driveAccessToken && window.google) {
@@ -994,8 +1943,10 @@ function driveSignOut() {
     driveFileId = null;
 }
 
+// Builds a readable Error from a failed Drive reply (status number plus Google's own message)
 async function driveFail(response, what) {
 
+    // Try to read Google's explanation from the reply
     let detail = "";
 
     try {
@@ -1012,6 +1963,7 @@ async function driveFail(response, what) {
         message += ": " + detail;
     }
 
+    // 403 usually means the Drive API isn't switched on in Google Cloud, or permission wasn't granted
     if (response.status === 403) {
         message += " — make sure the Google Drive API is enabled in your Google Cloud project and that you allowed access to the app's Drive data.";
     }
@@ -1022,8 +1974,10 @@ async function driveFail(response, what) {
     return error;
 }
 
+// Looks in the private app-data area for our backup file; returns it (id + modified time) or null
 async function driveFindFile() {
 
+    // Search for a file with our name that isn't in the trash
     const query = "name='" + DRIVE_FILE_NAME + "' and trashed=false";
 
     const url =
@@ -1051,6 +2005,7 @@ async function driveFindFile() {
     return null;
 }
 
+// Downloads the backup file and returns its contents as data
 async function driveDownload(fileId) {
 
     const response = await fetch(
@@ -1071,19 +2026,24 @@ async function driveDownload(fileId) {
     return response.json();
 }
 
+// Uploads data to Drive: creates the file if there is no fileId, otherwise replaces the existing file
 async function driveUpload(fileId, dataObj) {
 
+    // File details sent along with the data
     const metadata = {
         name: DRIVE_FILE_NAME,
         mimeType: "application/json"
     };
 
+    // New files are created inside the private app-data folder
     if (!fileId) {
         metadata.parents = ["appDataFolder"];
     }
 
+    // Drive expects 'multipart' uploads: details and data separated by a marker line
     const boundary = "deercamboundary";
 
+    // Build the multipart body: details part, then data part
     const body =
         "--" + boundary + "\r\n" +
         "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
@@ -1093,6 +2053,7 @@ async function driveUpload(fileId, dataObj) {
         JSON.stringify(dataObj) + "\r\n" +
         "--" + boundary + "--";
 
+    // PATCH (update) the existing file, or POST (create) a new one; ask Drive to send back id + modified time
     const url = fileId
         ? "https://www.googleapis.com/upload/drive/v3/files/" +
           fileId +
@@ -1116,90 +2077,103 @@ async function driveUpload(fileId, dataObj) {
     return response.json();
 }
 
+// ==================== App: the whole application screen ====================
+// Everything the user sees is built by this one function. It runs again (redraws) whenever a 'state' value changes.
 function App() {
 
-    const [view, setView] = useState("dashboard");
+    // ---- Page state ----
+    const [view, setView] = useState("dashboard");  // which tab is showing: dashboard, charts or map
 
-    const [cameras, setCameras] = useState(getCameras);
-    const [trails, setTrails] = useState(getTrails);
+    const [cameras, setCameras] = useState(getCameras);  // all cameras, each with its sightings (loaded from saved data)
+    const [trails, setTrails] = useState(getTrails);  // all deer trails
 
-    const [selectedCameraId, setSelectedCameraId] =
+    const [selectedCameraId, setSelectedCameraId] =  // camera whose details are open in the sidebar (null = none)
         useState(null);
 
-    const [showSightingForm, setShowSightingForm] =
+    const [showSightingForm, setShowSightingForm] =  // is the 'New Sighting' form open?
         useState(false);
 
-    const [drawingTrail, setDrawingTrail] =
+    const [drawingTrail, setDrawingTrail] =  // true while you are clicking points to draw a trail
         useState(false);
 
-    const [currentTrailPoints, setCurrentTrailPoints] =
+    const [currentTrailPoints, setCurrentTrailPoints] =  // points of the trail being drawn right now
         useState([]);
 
-    const [date, setDate] = useState("");
-    const [time, setTime] = useState("");
-    const [deerType, setDeerType] = useState("Buck");
-    const [number, setNumber] = useState("1");
-    const [antlerPoints, setAntlerPoints] = useState("");
-    const [direction, setDirection] = useState("");
-    const [notes, setNotes] = useState("");
+    // Sighting form fields (what you are typing into the New Sighting form)
+    const [date, setDate] = useState("");  // sighting date
+    const [time, setTime] = useState("");  // sighting time
+    const [deerType, setDeerType] = useState("Buck");  // Buck, Big Buck, Doe, Fawn or Unknown
+    const [number, setNumber] = useState("1");  // how many deer
+    const [antlerPoints, setAntlerPoints] = useState("");  // antler points (bucks only)
+    const [direction, setDirection] = useState("");  // direction of travel
+    const [notes, setNotes] = useState("");  // free-text notes
 
-    const [colors, setColors] = useState(getColors);
-    const [heatOn, setHeatOn] = useState(false);
-    const [heatFilter, setHeatFilter] = useState("All");
-    const [timelapseOn, setTimelapseOn] = useState(false);
-    const [timelapseHour, setTimelapseHour] = useState(5);
-    const [timelapsePlaying, setTimelapsePlaying] = useState(false);
-    const [mapVersion, setMapVersion] = useState(0);
+    // Map display settings
+    const [colors, setColors] = useState(getColors);  // camera / outline / trail / stand colors
+    const [heatOn, setHeatOn] = useState(false);  // heat map switched on?
+    const [heatFilter, setHeatFilter] = useState("All");  // which deer the heat map counts (All, Buck, Big Buck, Doe, Fawn)
+    const [heatRadius, setHeatRadius] = useState(90);  // how wide each heat blotch is (bigger = blotches join up sooner)
+    const [chartCamera, setChartCamera] = useState("all");  // Charts page camera filter ('all' or a camera id)
+    const [timelapseOn, setTimelapseOn] = useState(false);  // heat map timelapse mode on?
+    const [timelapseHour, setTimelapseHour] = useState(5);  // hour of the day (0-23) the timelapse is showing
+    const [timelapsePlaying, setTimelapsePlaying] = useState(false);  // is the timelapse animating?
+    const [mapVersion, setMapVersion] = useState(0);  // goes up each time the map is rebuilt so dependent effects redraw
 
-    const [movingCameraId, setMovingCameraId] = useState(null);
+    const [movingCameraId, setMovingCameraId] = useState(null);  // camera waiting to be placed at a new spot (Move Marker)
 
-    const [stands, setStands] = useState(getStands);
-    const [selectedStandId, setSelectedStandId] = useState(null);
-    const [standDraft, setStandDraft] = useState(null);
-    const [movingStandId, setMovingStandId] = useState(null);
+    const [stands, setStands] = useState(getStands);  // all hunting stands
+    const [selectedStandId, setSelectedStandId] = useState(null);  // stand whose details are open
+    const [standDraft, setStandDraft] = useState(null);  // the name/type being entered while adding a stand
+    const [movingStandId, setMovingStandId] = useState(null);  // stand waiting to be placed at a new spot
 
-    const [showTrails, setShowTrails] = useState(function() {
+    const [showTrails, setShowTrails] = useState(function() {  // show deer trails on the map?
         return getLayers().trails;
     });
-    const [showStands, setShowStands] = useState(function() {
+    const [showStands, setShowStands] = useState(function() {  // show stands on the map?
         return getLayers().stands;
     });
 
-    const [signedIn, setSignedIn] = useState(false);
-    const [syncStatus, setSyncStatus] = useState("");
-    const [syncError, setSyncError] = useState("");
+    const [signedIn, setSignedIn] = useState(false);  // connected to Google Drive right now?
+    const [syncStatus, setSyncStatus] = useState("");  // '', syncing, synced or error
+    const [syncError, setSyncError] = useState("");  // the readable explanation shown when you tap a sync error
 
-    const mapRef = useRef(null);
-    const cameraMarkersRef = useRef({});
-    const trailLayersRef = useRef([]);
-    const currentTrailLayerRef = useRef(null);
-    const drawingTrailRef = useRef(false);
-    const movingCameraRef = useRef(null);
-    const movingStandRef = useRef(null);
-    const standMarkersRef = useRef({});
-    const standDraftRef = useRef(null);
-    const showTrailsRef = useRef(true);
-    const showStandsRef = useRef(true);
-    const heatLayerRef = useRef(null);
-    const arrowMarkersRef = useRef({});
-    const colorsRef = useRef(colors);
+    // ---- Refs ----
+    // Refs hold things that must survive redraws without causing one: the map and its markers/layers,
+    // plus 'current' copies of state that the map's click handlers need (they were created once and can't see new state).
+    const mapRef = useRef(null);  // the Leaflet map object
+    const cameraMarkersRef = useRef({});  // camera id -> its dot on the map
+    const trailLayersRef = useRef([]);  // the saved trail lines on the map
+    const currentTrailLayerRef = useRef(null);  // the trail line being drawn
+    const drawingTrailRef = useRef(false);  // copy of drawingTrail for the map click handler
+    const movingCameraRef = useRef(null);  // copy of movingCameraId for map click handlers
+    const movingStandRef = useRef(null);  // copy of movingStandId for map click handlers
+    const standMarkersRef = useRef({});  // stand id -> its triangle on the map
+    const standDraftRef = useRef(null);  // copy of standDraft for the map click handler
+    const showTrailsRef = useRef(true);  // copy of showTrails for drawing trails
+    const showStandsRef = useRef(true);  // copy of showStands
+    const heatLayerRef = useRef(null);  // the heat map layer
+    const arrowMarkersRef = useRef({});  // camera id -> its direction arrow
+    const colorsRef = useRef(colors);  // copy of the colors for code that runs outside a redraw
     colorsRef.current = colors;
+    // Keep the ref copies up to date on every redraw
     standDraftRef.current = standDraft;
     showTrailsRef.current = showTrails;
     showStandsRef.current = showStands;
 
-    const driveSyncTimeoutRef = useRef(null);
-    const suppressNextPushRef = useRef(false);
-    const signedInRef = useRef(false);
-    const firstSaveRef = useRef(true);
-    const syncBusyRef = useRef(false);
-    const syncFnRef = useRef(null);
+    const driveSyncTimeoutRef = useRef(null);  // timer that waits 2 seconds after an edit before syncing
+    const suppressNextPushRef = useRef(false);  // set when data was just downloaded so it isn't uploaded straight back
+    const signedInRef = useRef(false);  // copy of signedIn for timers
+    const firstSaveRef = useRef(true);  // lets the very first save (on page load) skip the 'edited' stamp
+    const syncBusyRef = useRef(false);  // true while a sync is running
+    const syncFnRef = useRef(null);  // always points at the newest syncFromDrive
     syncFnRef.current = syncFromDrive;
 
+    // Keep signedInRef in step with signedIn
     useEffect(function() {
         signedInRef.current = signedIn;
     }, [signedIn]);
 
+    // After data is downloaded, redraw the camera dots and trail lines on the map so they match
     function refreshMapLayers(newCameras, newTrails) {
 
         if (!mapRef.current) return;
@@ -1223,11 +2197,13 @@ function App() {
         });
     }
 
+    // Remember when (and against which Drive version) this device last synced
     function markSynced(timestamp, remoteModified) {
         localStorage.setItem(SYNCED_AT_KEY, String(timestamp));
         localStorage.setItem(SYNCED_REMOTE_KEY, remoteModified || "");
     }
 
+    // Show a sync problem in the header; a 401 means the Google pass expired so we sign out
     function reportDriveError(error) {
 
         setSyncStatus("error");
@@ -1250,12 +2226,14 @@ function App() {
         );
     }
 
+    // UPLOAD: send this device's cameras, trails and stands to the Drive backup file
     async function pushToDrive() {
 
         setSyncStatus("syncing");
 
         const timestamp = Date.now();
 
+        // What gets saved in the backup file
         const payload = {
             app: "Deer Trail Cam Scorer",
             version: 1,
@@ -1277,6 +2255,7 @@ function App() {
         markSynced(timestamp, result && result.modifiedTime);
     }
 
+    // DOWNLOAD: replace this device's data with the copy stored in Drive
     async function pullFromDrive(file) {
 
         const driveData = await driveDownload(file.id);
@@ -1291,6 +2270,7 @@ function App() {
             );
         }
 
+        // Clean up the downloaded cameras the same way saved ones are cleaned
         const pulledCameras = driveData.cameras.map(function(camera) {
             return {
                 id: camera.id || Date.now(),
@@ -1306,6 +2286,7 @@ function App() {
                    Number.isFinite(camera.lng);
         });
 
+        // Tell the save effect not to treat this download as a new edit (otherwise it would upload it again)
         suppressNextPushRef.current = true;
 
         setCameras(pulledCameras);
@@ -1322,8 +2303,15 @@ function App() {
         markSynced(Date.now(), file.modifiedTime);
     }
 
+    // SYNC (the heart of Drive sync). Decides whether to upload, download, ask you, or do nothing:
+    //   - no backup in Drive yet                          -> upload
+    //   - this device has no data                         -> download
+    //   - Drive unchanged since last sync                 -> upload only if you edited here
+    //   - Drive changed and you did NOT edit here         -> download
+    //   - Drive changed AND you edited here (or first sync with data on both) -> ask which to keep
     async function syncFromDrive() {
 
+        // Don't run two syncs at once, and do nothing when not signed in
         if (syncBusyRef.current || !driveAccessToken) return;
 
         syncBusyRef.current = true;
@@ -1332,8 +2320,10 @@ function App() {
 
         try {
 
+            // Is there already a backup file in Drive?
             const file = await driveFindFile();
 
+            // No backup yet: upload this device's data to create it
             if (!file) {
 
                 await pushToDrive();
@@ -1342,34 +2332,42 @@ function App() {
 
                 driveFileId = file.id;
 
+                // Does this device have anything saved?
                 const localHasData =
                     getCameras().length > 0 ||
                     getTrails().length > 0 ||
                     getStands().length > 0;
 
+                // The Drive file version this device saw at its last sync
                 const lastRemote =
                     localStorage.getItem(SYNCED_REMOTE_KEY) || "";
 
+                // Has Drive changed since then (another device uploaded)?
                 const remoteChanged = lastRemote !== file.modifiedTime;
 
+                // Have you edited on this device since the last sync?
                 const dirty = getLastModified() > getSyncedAt();
 
+                // Nothing here to lose: just download
                 if (!localHasData) {
 
                     await pullFromDrive(file);
 
+                // Drive is as we left it: upload only if we have new edits
                 } else if (!remoteChanged) {
 
                     if (dirty) {
                         await pushToDrive();
                     }
 
+                // Drive has newer data and we have no unsynced edits: safe to download
                 } else if (!dirty && lastRemote) {
 
                     await pullFromDrive(file);
 
                 } else {
 
+                    // Both sides have changes: let the user choose which copy wins
                     const useCloud = confirm(
                         "Google Drive already has saved data (from another device or an earlier sync).\n\n" +
                         "OK = load the cloud data here (replaces what's on this device).\n" +
@@ -1397,8 +2395,10 @@ function App() {
         }
     }
 
+    // Runs when Google's sign-in popup finishes
     function handleDriveAuthResponse(response) {
 
+        // Google reported a problem
         if (response && response.error) {
 
             setSyncStatus("error");
@@ -1411,10 +2411,12 @@ function App() {
             return;
         }
 
+        // Signed in: we got a pass (token)
         if (response && response.access_token) {
 
             if (
                 window.google &&
+                // The permission box for Drive access was left unticked on Google's screen
                 !google.accounts.oauth2.hasGrantedAllScopes(
                     response,
                     DRIVE_SCOPE
@@ -1432,6 +2434,7 @@ function App() {
                 return;
             }
 
+            // Connected OK: remember it, show 'Synced', and run a first sync
             localStorage.setItem(WAS_CONNECTED_KEY, "1");
 
             setSignedIn(true);
@@ -1440,6 +2443,7 @@ function App() {
         }
     }
 
+    // Runs when the popup was closed or blocked before finishing
     function handleDriveTokenError(error) {
 
         setSyncStatus("error");
@@ -1453,6 +2457,7 @@ function App() {
         );
     }
 
+    // Asks you to paste your Google Client ID (used by the gear button, or automatically if none is set)
     function askForClientId() {
 
         const current = getClientId();
@@ -1477,6 +2482,7 @@ function App() {
         return true;
     }
 
+    // Connect button: make sure a Client ID exists, then open Google's sign-in
     function signInToDrive() {
 
         if (!clientIdLooksValid(getClientId())) {
@@ -1486,6 +2492,7 @@ function App() {
         requestDriveAccess(handleDriveAuthResponse);
     }
 
+    // Disconnect button: forget the Google pass (your data stays on this device)
     function signOutOfDrive() {
         driveSignOut();
         localStorage.removeItem(WAS_CONNECTED_KEY);
@@ -1494,6 +2501,7 @@ function App() {
         setSyncError("");
     }
 
+    // Wait for Google's sign-in script to load, then set up the sign-in client (checks every 0.2 s)
     useEffect(function() {
 
         const interval = setInterval(function() {
@@ -1510,6 +2518,8 @@ function App() {
 
     }, []);
 
+    // SAVE + SYNC: whenever cameras, trails or stands change, save them on this device,
+    // stamp the edit time, and (if connected to Drive) sync 2 seconds later
     useEffect(function() {
 
         saveData(cameras, trails, stands);
@@ -1539,6 +2549,7 @@ function App() {
 
     }, [cameras, trails, stands]);
 
+    // Check Drive again when you return to the app and once a minute while connected
     useEffect(function() {
 
         function trySync() {
@@ -1570,6 +2581,7 @@ function App() {
         return stand.id === selectedStandId;
     });
 
+    // Finishes 'Move Marker': puts the waiting camera at the tapped spot. Returns false if no camera was waiting.
     function placeMovingCamera(latlng) {
 
         const id = movingCameraRef.current;
@@ -1599,6 +2611,7 @@ function App() {
         return true;
     }
 
+    // Start 'Move Marker': remember which camera to move, then the next map tap places it
     function startMoveCamera(id) {
         movingStandRef.current = null;
         setMovingStandId(null);
@@ -1606,6 +2619,7 @@ function App() {
         setMovingCameraId(id);
     }
 
+    // Stop any move in progress (camera or stand)
     function cancelMove() {
         movingCameraRef.current = null;
         setMovingCameraId(null);
@@ -1613,6 +2627,7 @@ function App() {
         setMovingStandId(null);
     }
 
+    // Finishes 'Move Stand': puts the waiting stand at the tapped spot
     function placeMovingStand(latlng) {
 
         const id = movingStandRef.current;
@@ -1636,6 +2651,7 @@ function App() {
         return true;
     }
 
+    // Start 'Move Stand'
     function startMoveStand(id) {
         movingCameraRef.current = null;
         setMovingCameraId(null);
@@ -1643,10 +2659,12 @@ function App() {
         setMovingStandId(id);
     }
 
+    // Start adding a stand: show the name/type form, next map tap places it
     function startStandDraft() {
 
         cancelMove();
 
+        // Drawing a trail: add this point
         if (drawingTrailRef.current) {
             cancelTrail();
         }
@@ -1658,11 +2676,13 @@ function App() {
         setStandDraft({ name: "", type: STAND_TYPES[0] });
     }
 
+    // Cancel adding a stand
     function cancelStandDraft() {
         standDraftRef.current = null;
         setStandDraft(null);
     }
 
+    // Open a stand's details and zoom the map to it
     function openStand(stand) {
 
         setSelectedStandId(stand.id);
@@ -1684,6 +2704,7 @@ function App() {
         }, 150);
     }
 
+    // Delete a stand (after confirming)
     function deleteStand(id) {
 
         const stand = stands.find(function(item) {
@@ -1705,10 +2726,13 @@ function App() {
         setSelectedStandId(null);
     }
 
+    // BUILD THE MAP. Runs when the Map tab opens.
+    // If an old map exists for a container that no longer exists, throw it away and start fresh; otherwise just resize it.
     function initializeMap() {
 
         if (
             mapRef.current &&
+            // (is the old map attached to a map box that is no longer on the page?)
             mapRef.current.getContainer() !==
                 document.getElementById("map")
         ) {
@@ -1732,15 +2756,22 @@ function App() {
             return;
         }
 
-        const map = L.map("map").setView(
+        // Create the map. zoomSnap/zoomDelta give finer zoom steps (quarter-level stops, half-level per button press)
+        const map = L.map("map", {
+            zoomSnap: 0.25,
+            zoomDelta: 0.5,
+            wheelPxPerZoomLevel: 90
+        }).setView(
             [42.84, -88.54],
             13
         );
 
+        // Remember the map; bump mapVersion so the heat/arrow/stand effects draw onto it
         mapRef.current = map;
         setMapVersion(function(v) { return v + 1; });
 
         // Camera markers live in their own pane above the trails
+        // Custom layers ('panes') decide what draws on top: trails < stands (640) < cameras (650)
         map.createPane("cameraPane");
         map.getPane("cameraPane").style.zIndex = 650;
 
@@ -1748,6 +2779,7 @@ function App() {
         map.createPane("standPane");
         map.getPane("standPane").style.zIndex = 640;
 
+        // Satellite imagery background (Esri World Imagery)
         L.tileLayer(
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
             {
@@ -1755,14 +2787,21 @@ function App() {
             }
         ).addTo(map);
 
+        // Put a dot on the map for every saved camera
         cameras.forEach(function(camera) {
             addCameraMarker(camera);
         });
 
+        // Draw every saved trail
         trails.forEach(function(trail) {
             drawSavedTrail(trail);
         });
 
+        // MAP CLICK: what tapping the map does, in priority order:
+        //   1. a camera/stand is waiting to be moved -> put it here
+        //   2. a stand is being added                -> create the stand here
+        //   3. a trail is being drawn                -> add a point to the trail
+        //   4. otherwise                             -> ask for a name and add a new camera here
         map.on("click", function(event) {
 
             if (
@@ -1772,6 +2811,7 @@ function App() {
                 return;
             }
 
+            // Adding a stand: needs a name first
             if (standDraftRef.current) {
 
                 const draft = standDraftRef.current;
@@ -1839,6 +2879,7 @@ function App() {
         });
     }
 
+    // When the Map tab opens, build the map (after a short wait so its box exists)
     useEffect(function() {
 
         if (view !== "map") return;
@@ -1853,6 +2894,7 @@ function App() {
 
     }, [view]);
 
+    // Draws one camera as a dot on the map (does nothing if it already has one)
     function addCameraMarker(camera) {
 
         if (!mapRef.current) return;
@@ -1861,6 +2903,7 @@ function App() {
             return;
         }
 
+        // The dot: red with a white outline by default, sitting in the camera pane so it is above trails
         const marker = L.circleMarker(
             [camera.lat, camera.lng],
             {
@@ -1873,6 +2916,7 @@ function App() {
             }
         ).addTo(mapRef.current);
 
+        // Tapping a camera: place a waiting move here, or open the camera and zoom to it
         marker.on("click", function(event) {
 
             L.DomEvent.stopPropagation(event);
@@ -1897,10 +2941,12 @@ function App() {
         cameraMarkersRef.current[camera.id] = marker;
     }
 
+    // Draws one saved trail as a line (only if trails are switched on)
     function drawSavedTrail(trail) {
 
         if (!mapRef.current) return;
 
+        // The trail line
         const line = L.polyline(
             trail.points,
             {
@@ -1917,6 +2963,7 @@ function App() {
         trailLayersRef.current.push(line);
     }
 
+    // Draw the trail line while you are clicking points to make a new trail
     useEffect(function() {
 
         if (!mapRef.current) return;
@@ -1945,6 +2992,7 @@ function App() {
 
     }, [currentTrailPoints]);
 
+    // Colors changed: save them and recolor the camera dots, trails and stand triangles
     useEffect(function() {
 
         localStorage.setItem(
@@ -1977,6 +3025,7 @@ function App() {
 
     }, [colors]);
 
+    // HEAT MAP: rebuild the heat layer whenever its settings, the data or the timelapse hour change
     useEffect(function() {
 
         if (!mapRef.current) return;
@@ -1986,6 +3035,7 @@ function App() {
             heatLayerRef.current = null;
         }
 
+        // Heat map off (or its library failed to load): nothing to draw
         if (!heatOn || !L.heatLayer) return;
 
         const points = [];
@@ -2009,6 +3059,7 @@ function App() {
 
         if (!points.length) return;
 
+        // The busiest camera sets the top of the color scale
         let maxCount = Math.max.apply(
             null,
             points.map(function(point) {
@@ -2016,6 +3067,7 @@ function App() {
             })
         );
 
+        // In timelapse, use the busiest camera-hour of the whole day as the scale so hours can be compared fairly
         if (timelapseOn) {
 
             // keep the scale fixed across the whole day so hours are comparable
@@ -2041,16 +3093,18 @@ function App() {
             });
         }
 
+        // Draw the heat layer; radius/blur come from the Heat radius slider
         heatLayerRef.current = L.heatLayer(points, {
-            radius: 40,
-            blur: 30,
+            radius: heatRadius,
+            blur: Math.round(heatRadius * 0.7),
             maxZoom: 17,
             max: maxCount,
             minOpacity: 0.35
         }).addTo(mapRef.current);
 
-    }, [heatOn, heatFilter, cameras, mapVersion, timelapseOn, timelapseHour]);
+    }, [heatOn, heatFilter, heatRadius, cameras, mapVersion, timelapseOn, timelapseHour]);
 
+    // TIMELAPSE: while playing, move to the next hour every 0.9 seconds (23 -> 0 wraps around)
     useEffect(function() {
 
         if (!timelapsePlaying) return;
@@ -2067,6 +3121,7 @@ function App() {
 
     }, [timelapsePlaying]);
 
+    // DIRECTION ARROWS: rebuild each camera's arrow from its sightings
     useEffect(function() {
 
         Object.values(arrowMarkersRef.current).forEach(function(marker) {
@@ -2098,6 +3153,7 @@ function App() {
 
     }, [cameras, colors, mapVersion]);
 
+    // STANDS: make the triangles on the map match the stands list (add, move, remove, show/hide)
     useEffect(function() {
 
         const map = mapRef.current;
@@ -2193,6 +3249,7 @@ function App() {
 
     }, [stands, mapVersion, showStands]);
 
+    // Save the trails/stands on-off choice and show or hide the trail lines
     useEffect(function() {
 
         localStorage.setItem(
@@ -2223,6 +3280,7 @@ function App() {
 
     }, [showTrails, showStands, mapVersion]);
 
+    // Open a camera's details, switch to the map, and zoom to it
     function openCamera(camera) {
 
         setSelectedStandId(null);
@@ -2243,6 +3301,7 @@ function App() {
         }, 150);
     }
 
+    // Delete a camera and all its sightings (after confirming)
     function deleteCamera(id) {
 
         const camera = cameras.find(function(item) {
@@ -2282,6 +3341,7 @@ function App() {
         setSelectedCameraId(null);
     }
 
+    // Clear the New Sighting form back to its starting values
     function resetSightingForm() {
 
         setDate("");
@@ -2293,12 +3353,15 @@ function App() {
         setNotes("");
     }
 
+    // Save the New Sighting form as a sighting on the selected camera
     function addSighting(event) {
 
+        // Stop the browser reloading the page when the form is submitted
         event.preventDefault();
 
         if (!selectedCamera) return;
 
+        // The new sighting record
         const sighting = {
             id: Date.now(),
             date: date,
@@ -2336,6 +3399,7 @@ function App() {
         setShowSightingForm(false);
     }
 
+    // Remove one sighting from the selected camera
     function deleteSighting(id) {
 
         if (!selectedCamera) return;
@@ -2361,6 +3425,7 @@ function App() {
         });
     }
 
+    // Start drawing a deer trail (also switches trails on)
     function startTrail() {
 
         cancelMove();
@@ -2375,6 +3440,7 @@ function App() {
         setCurrentTrailPoints([]);
     }
 
+    // Abandon the trail being drawn
     function cancelTrail() {
 
         drawingTrailRef.current = false;
@@ -2394,6 +3460,7 @@ function App() {
         }
     }
 
+    // Save the trail being drawn (needs at least two points and a name)
     function finishTrail() {
 
         if (currentTrailPoints.length < 2) {
@@ -2440,6 +3507,7 @@ function App() {
         drawSavedTrail(trail);
     }
 
+    // Delete a trail (after confirming)
     function deleteTrail(id) {
 
         const confirmed = confirm(
@@ -2463,6 +3531,7 @@ function App() {
         );
     }
 
+    // Remove all trail lines from the map and draw the given list again
     function redrawAllTrails(list) {
 
         if (!mapRef.current) return;
@@ -2482,6 +3551,7 @@ function App() {
         });
     }
 
+    // Export Data button: download everything as a .json backup file
     function exportData() {
 
         const data = {
@@ -2493,12 +3563,14 @@ function App() {
             stands: stands
         };
 
+        // Turn the data into nicely indented text
         const json = JSON.stringify(
             data,
             null,
             2
         );
 
+        // Wrap the text in a downloadable file
         const blob = new Blob(
             [json],
             {
@@ -2512,6 +3584,7 @@ function App() {
 
         link.href = url;
 
+        // File name: deer-trail-cam-backup-<today's date>.json
         link.download =
             "deer-trail-cam-backup-" +
             new Date()
@@ -2528,12 +3601,14 @@ function App() {
         URL.revokeObjectURL(url);
     }
 
+    // Import Data button: read a backup file and replace this device's data with it
     function importData(event) {
 
         const file = event.target.files[0];
 
         if (!file) return;
 
+        // Read the chosen file as text
         const reader = new FileReader();
 
         reader.onload = function(loadEvent) {
@@ -2563,6 +3638,7 @@ function App() {
 
                 if (!confirmed) return;
 
+                // Clean up imported cameras, trails and stands before using them
                 const importedCameras =
                     data.cameras.map(function(camera) {
 
@@ -2664,6 +3740,8 @@ function App() {
         reader.readAsText(file);
     }
 
+    // ---- Numbers used by the dashboard and charts ----
+    // Flat list of every sighting from every camera (each remembers which camera it came from)
     const allSightings = [];
 
     cameras.forEach(function(camera) {
@@ -2680,6 +3758,7 @@ function App() {
 
     });
 
+    // Newest sightings first
     allSightings.sort(function(a, b) {
 
         return new Date(
@@ -2695,6 +3774,7 @@ function App() {
 
     });
 
+    // Total deer across all sightings
     const totalDeer =
         allSightings.reduce(
             function(total, sighting) {
@@ -2704,6 +3784,7 @@ function App() {
             0
         );
 
+    // Bucks seen (includes big bucks)
     const buckCount =
         allSightings
             .filter(function(s) {
@@ -2714,6 +3795,7 @@ function App() {
                     Number(s.number || 0);
             }, 0);
 
+    // Big bucks seen
     const bigBuckCount =
         allSightings
             .filter(function(s) {
@@ -2724,6 +3806,7 @@ function App() {
                     Number(s.number || 0);
             }, 0);
 
+    // Does seen
     const doeCount =
         allSightings
             .filter(function(s) {
@@ -2734,6 +3817,7 @@ function App() {
                     Number(s.number || 0);
             }, 0);
 
+    // Fawns seen
     const fawnCount =
         allSightings
             .filter(function(s) {
@@ -2744,6 +3828,7 @@ function App() {
                     Number(s.number || 0);
             }, 0);
 
+    // Deer of unknown type
     const unknownCount =
         allSightings
             .filter(function(s) {
@@ -2754,6 +3839,7 @@ function App() {
                     Number(s.number || 0);
             }, 0);
 
+    // Deer per direction of travel, to find the most common one
     const directionCounts = {};
 
     allSightings.forEach(function(sighting) {
@@ -2765,11 +3851,13 @@ function App() {
             Number(sighting.number || 0);
     });
 
+    // The direction with the most deer
     const topDirectionKey =
         Object.keys(directionCounts).sort(function(x, y) {
             return directionCounts[y] - directionCounts[x];
         })[0];
 
+    // Deer seen per camera, busiest first
     const cameraActivity =
         cameras.map(function(camera) {
 
@@ -2791,6 +3879,7 @@ function App() {
             return b.count - a.count;
         });
 
+    // Each camera's score (see SCORE_CONFIG), highest first
     const cameraScores =
         cameras.map(function(camera) {
 
@@ -2803,6 +3892,7 @@ function App() {
             return b.score - a.score;
         });
 
+    // Deer seen in each hour of the day (index 0 = midnight hour)
     const hourActivity = new Array(24).fill(0);
 
     allSightings.forEach(function(sighting) {
@@ -2815,6 +3905,7 @@ function App() {
 
     });
 
+    // Draws one horizontal bar row (label, number, filled bar) sized against the biggest value
     function bar(label, value, maximum) {
 
         const width =
@@ -2861,6 +3952,7 @@ function App() {
         );
     }
 
+    // THE DASHBOARD PAGE: summary numbers and bar charts
     function Dashboard() {
 
         const maxType = Math.max(
@@ -2918,11 +4010,21 @@ function App() {
                 ),
 
                 e(
+                    Collapsible,
+                    {
+                        id: "dash-overview",
+                        title: "Overview",
+                        className: "dashboard-card",
+                        style: { marginBottom: "20px" }
+                    },
+
+                e(
                     "div",
                     {
                         className: "stats"
                     },
 
+                    // Stat box: Total Deer Seen
                     e(
                         "div",
                         {
@@ -2955,6 +4057,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Buck Sightings
                     e(
                         "div",
                         {
@@ -2986,6 +4089,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Most Common Direction
                     e(
                         "div",
                         {
@@ -3022,6 +4126,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Trail Cameras
                     e(
                         "div",
                         {
@@ -3045,6 +4150,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Deer Trails
                     e(
                         "div",
                         {
@@ -3068,6 +4174,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Most Active Camera
                     e(
                         "div",
                         {
@@ -3109,6 +4216,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Top Scored Camera
                     e(
                         "div",
                         {
@@ -3150,6 +4258,7 @@ function App() {
                         )
                     ),
 
+                    // Stat box: Latest Sighting
                     e(
                         "div",
                         {
@@ -3187,6 +4296,7 @@ function App() {
                                 : ""
                         )
                     )
+                )
                 ),
 
                 e(
@@ -3195,17 +4305,10 @@ function App() {
                         className: "dashboard-grid"
                     },
 
+                    // Dashboard card: Deer Type (click its title to collapse)
                     e(
-                        "div",
-                        {
-                            className: "dashboard-card"
-                        },
-
-                        e(
-                            "h3",
-                            null,
-                            "Deer Type"
-                        ),
+                        Collapsible,
+                        { id: "dash-deer-type", title: "Deer Type", className: "dashboard-card" },
 
                         bar(
                             "Big Buck",
@@ -3238,17 +4341,10 @@ function App() {
                         )
                     ),
 
+                    // Dashboard card: Activity by Hour (click its title to collapse)
                     e(
-                        "div",
-                        {
-                            className: "dashboard-card"
-                        },
-
-                        e(
-                            "h3",
-                            null,
-                            "Activity by Hour"
-                        ),
+                        Collapsible,
+                        { id: "dash-activity-by-hour", title: "Activity by Hour", className: "dashboard-card" },
 
                         e(
                             "div",
@@ -3325,17 +4421,10 @@ function App() {
                         )
                     ),
 
+                    // Dashboard card: Camera Activity (click its title to collapse)
                     e(
-                        "div",
-                        {
-                            className: "dashboard-card"
-                        },
-
-                        e(
-                            "h3",
-                            null,
-                            "Camera Activity"
-                        ),
+                        Collapsible,
+                        { id: "dash-camera-activity", title: "Camera Activity", className: "dashboard-card" },
 
                         cameraActivity.length
                             ? cameraActivity.map(
@@ -3356,17 +4445,10 @@ function App() {
                             )
                     ),
 
+                    // Dashboard card: Recent Sightings (click its title to collapse)
                     e(
-                        "div",
-                        {
-                            className: "dashboard-card"
-                        },
-
-                        e(
-                            "h3",
-                            null,
-                            "Recent Sightings"
-                        ),
+                        Collapsible,
+                        { id: "dash-recent-sightings", title: "Recent Sightings", className: "dashboard-card" },
 
                         allSightings.length
                             ? allSightings
@@ -3433,18 +4515,10 @@ function App() {
                             )
                     ),
 
+                    // Dashboard card: Camera Scores (click its title to collapse)
                     e(
-                        "div",
-                        {
-                            className:
-                                "dashboard-card wide"
-                        },
-
-                        e(
-                            "h3",
-                            null,
-                            "Camera Scores"
-                        ),
+                        Collapsible,
+                        { id: "dash-camera-scores", title: "Camera Scores", className: "dashboard-card wide" },
 
                         e(
                             "p",
@@ -3479,18 +4553,10 @@ function App() {
                             )
                     ),
 
+                    // Dashboard card: All Sightings (click its title to collapse)
                     e(
-                        "div",
-                        {
-                            className:
-                                "dashboard-card wide"
-                        },
-
-                        e(
-                            "h3",
-                            null,
-                            "All Sightings"
-                        ),
+                        Collapsible,
+                        { id: "dash-all-sightings", title: "All Sightings", className: "dashboard-card wide" },
 
                         allSightings.length
                             ? e(
@@ -3646,6 +4712,7 @@ function App() {
         );
     }
 
+    // One color picker row in Map Options (updates and saves the color)
     function colorRow(label, key) {
 
         return e(
@@ -3691,16 +4758,17 @@ function App() {
         );
     }
 
+    // The 'Map Options' card: heat map, timelapse, show/hide layers and colors
     function mapOptions() {
 
         return e(
-            "div",
+            Collapsible,
             {
+                id: "side-map-options",
+                title: "Map Options",
                 className: "card",
                 key: "map-options"
             },
-
-            e("h3", null, "Map Options"),
 
             e(
                 "button",
@@ -3743,6 +4811,29 @@ function App() {
                         e("option", { value: "Big Buck" }, "Big bucks only"),
                         e("option", { value: "Doe" }, "Does"),
                         e("option", { value: "Fawn" }, "Fawns")
+                    )
+                )
+                : null,
+
+            heatOn
+                ? e(
+                    "div",
+                    { className: "form-group" },
+
+                    e("label", null, "Heat radius: " + heatRadius),
+
+                    e(
+                        "input",
+                        {
+                            type: "range",
+                            min: 20,
+                            max: 250,
+                            step: 5,
+                            value: heatRadius,
+                            onChange: function(event) {
+                                setHeatRadius(Number(event.target.value));
+                            }
+                        }
                     )
                 )
                 : null,
@@ -3922,15 +5013,164 @@ function App() {
         );
     }
 
-    function standsSection() {
+    // The Charts tab: a set of SVG charts drawn from the sighting data
+    function chartsPage() {
+
+        // optional filter so every chart can be limited to one camera
+        const sightings = chartCamera === "all"
+            ? allSightings
+            : allSightings.filter(function(sighting) {
+                return String(sighting.cameraId) === chartCamera;
+            });
+
+        const visibleCameras = chartCamera === "all"
+            ? cameras
+            : cameras.filter(function(camera) {
+                return String(camera.id) === chartCamera;
+            });
+
+        const cameraLookup = {};
+
+        cameras.forEach(function(camera) {
+            cameraLookup[camera.id] = camera;
+        });
+
+        // deer counts by type, for the type donut
+        const typeSlices = CHART_TYPES.map(function(type) {
+            return {
+                label: type,
+                color: TYPE_COLORS[type],
+                value: sumNumber(sightings.filter(function(s) {
+                    return s.deerType === type;
+                }))
+            };
+        });
+
+        // deer seen during shooting hours versus outside them
+        let shootingCount = 0;
+        let otherCount = 0;
+
+        sightings.forEach(function(sighting) {
+
+            const camera = cameraLookup[sighting.cameraId];
+            const n = Number(sighting.number || 0);
+
+            if (camera && isShootingTime(sighting, camera)) {
+                shootingCount += n;
+            } else {
+                otherCount += n;
+            }
+        });
+
+        // a collapsible card holding one chart
+        function chartCard(id, title, content, wide) {
+
+            return e(
+                Collapsible,
+                {
+                    id: "chart-" + id,
+                    title: title,
+                    className: "dashboard-card" + (wide ? " wide" : "")
+                },
+                content
+            );
+        }
 
         return e(
             "div",
+            { className: "dashboard" },
+
+            e(
+                "div",
+                { className: "dashboard-inner" },
+
+                e(
+                    "div",
+                    { className: "dashboard-title" },
+                    e("h2", null, "Charts"),
+                    e("p", null, "Trends and patterns from your trail camera data")
+                ),
+
+                e(
+                    "div",
+                    { className: "chart-filter" },
+
+                    e(
+                        "select",
+                        {
+                            value: chartCamera,
+                            onChange: function(event) {
+                                setChartCamera(event.target.value);
+                            }
+                        },
+                        e("option", { value: "all" }, "All cameras"),
+                        cameras.map(function(camera) {
+                            return e(
+                                "option",
+                                { key: camera.id, value: String(camera.id) },
+                                camera.name
+                            );
+                        })
+                    )
+                ),
+
+                e(
+                    "div",
+                    { className: "dashboard-grid" },
+
+                    // Chart: Deer seen per day (last 30 days)
+                    chartCard("daily", "Deer seen per day (last 30 days)", dailyChart(sightings), true),
+
+                    // Chart: Deer type mix
+                    chartCard("types", "Deer type mix", donutChart(typeSlices, "deer"), false),
+
+                    // Chart: Shooting hours vs other hours
+                    chartCard(
+                        "shooting",
+                        "Shooting hours vs other hours",
+                        donutChart(
+                            [
+                                { label: "Shooting hours", color: "#1f4d2b", value: shootingCount },
+                                { label: "Other hours", color: "#9e9e9e", value: otherCount }
+                            ],
+                            "deer"
+                        ),
+                        false
+                    ),
+
+                    // Chart: Day of week by hour
+                    chartCard("hourgrid", "Day of week by hour", hourGridChart(sightings), true),
+
+                    // Chart: Direction of travel
+                    chartCard("compass", "Direction of travel", compassChart(sightings), false),
+
+                    // Chart: Antler points (bucks)
+                    chartCard("antlers", "Antler points (bucks)", antlerChart(sightings), false),
+
+                    // Chart: Cameras compared
+                    chartCard("cameras", "Cameras compared", cameraTypeChart(sightings, visibleCameras), true),
+
+                    // Chart: Weekly trend by deer type
+                    chartCard("weekly", "Weekly trend by deer type", weeklyTypeChart(sightings), true),
+
+                    // Chart: Total deer seen over time
+                    chartCard("cumulative", "Total deer seen over time", cumulativeChart(sightings), true)
+                )
+            )
+        );
+    }
+
+    // The 'Stands' section of the sidebar: add form, list of stands
+    function standsSection() {
+
+        return e(
+            Collapsible,
             {
+                id: "side-stands",
+                title: "Stands",
+                tag: "h2",
                 className: "section"
             },
-
-            e("h2", null, "Stands"),
 
             standDraft
                 ? e(
@@ -4075,6 +5315,7 @@ function App() {
         );
     }
 
+    // Details panel for the selected stand (move / delete)
     function standPanel() {
 
         const moving = movingStandId === selectedStand.id;
@@ -4166,6 +5407,7 @@ function App() {
         );
     }
 
+    // THE SIDEBAR on the Map page: shows stand details, camera details, or the lists of cameras/trails/stands
     function CameraPanel() {
 
         if (selectedStand) {
@@ -4180,17 +5422,15 @@ function App() {
 
                 mapOptions(),
 
+                // Collapsible sidebar section (side-cameras)
                 e(
-                    "div",
+                    Collapsible,
                     {
+                        id: "side-cameras",
+                        title: "Trail Cameras",
+                        tag: "h2",
                         className: "section"
                     },
-
-                    e(
-                        "h2",
-                        null,
-                        "Trail Cameras"
-                    ),
 
                     e(
                         "p",
@@ -4198,14 +5438,7 @@ function App() {
                             className: "empty"
                         },
                         "Click the map to add a camera."
-                    )
-                ),
-
-                e(
-                    "div",
-                    {
-                        className: "section"
-                    },
+                    ),
 
                     cameras.length
                         ? cameras.map(
@@ -4290,17 +5523,15 @@ function App() {
                         )
                 ),
 
+                // Collapsible sidebar section (side-trails)
                 e(
-                    "div",
+                    Collapsible,
                     {
+                        id: "side-trails",
+                        title: "Deer Trails",
+                        tag: "h2",
                         className: "section"
                     },
-
-                    e(
-                        "h2",
-                        null,
-                        "Deer Trails"
-                    ),
 
                     drawingTrail
                         ? e(
@@ -4546,6 +5777,7 @@ function App() {
                                 addSighting
                         },
 
+                        // Form field: Date
                         e(
                             "div",
                             {
@@ -4575,6 +5807,7 @@ function App() {
                             )
                         ),
 
+                        // Form field: Time
                         e(
                             "div",
                             {
@@ -4604,6 +5837,7 @@ function App() {
                             )
                         ),
 
+                        // Form field: Deer Type
                         e(
                             "div",
                             {
@@ -4662,6 +5896,7 @@ function App() {
                             )
                         ),
 
+                        // Form field: Number of Deer
                         e(
                             "div",
                             {
@@ -4697,6 +5932,7 @@ function App() {
                                 React.Fragment,
                                 null,
 
+                                // Form field: Antler Points
                                 e(
                                     "div",
                                     {
@@ -4729,6 +5965,7 @@ function App() {
                             )
                             : null,
 
+                        // Form field: Direction of Travel
                         e(
                             "div",
                             {
@@ -4773,6 +6010,7 @@ function App() {
                             )
                         ),
 
+                        // Form field: Notes
                         e(
                             "div",
                             {
@@ -4816,17 +6054,14 @@ function App() {
                 )
                 : null,
 
+            // Collapsible sidebar section (side-sightings)
             e(
-                "div",
+                Collapsible,
                 {
+                    id: "side-sightings",
+                    title: "Sightings",
                     className: "card"
                 },
-
-                e(
-                    "h3",
-                    null,
-                    "Sightings"
-                ),
 
                 selectedCamera.sightings.length
                     ? selectedCamera.sightings
@@ -5076,6 +6311,21 @@ function App() {
                 "button",
                 {
                     className:
+                        view === "charts"
+                            ? "active"
+                            : "",
+                    onClick:
+                        function() {
+                            setView("charts");
+                        }
+                },
+                "Charts"
+            ),
+
+            e(
+                "button",
+                {
+                    className:
                         view === "map"
                             ? "active"
                             : "",
@@ -5092,6 +6342,8 @@ function App() {
             ? e(
                 Dashboard
             )
+            : view === "charts"
+            ? chartsPage()
             : e(
                 "div",
                 {
