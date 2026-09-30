@@ -554,6 +554,18 @@ th {
     background: #1f4d2b;
 }
 
+/* Weekly power rankings: green up-arrow when a camera moved up */
+.move-up {
+    color: #2e7d32;
+    font-weight: bold;
+}
+
+/* Weekly power rankings: red down-arrow when a camera moved down */
+.move-down {
+    color: #c0392b;
+    font-weight: bold;
+}
+
 /* Every second bar is a slightly different green so touching bars can be told apart */
 .hour-col:nth-child(even) .hour-bar {
     background: #2a6a3b;
@@ -1188,7 +1200,7 @@ function lineChart(points, color) {
 }
 
 // Donut with a legend. items = [{label, value, color}]
-function donutChart(items, centerLabel) {
+function donutChart(items, centerLabel, legendAll) {
 
     // Only slices with something in them are drawn
     const shown = items.filter(function(item) { return item.value > 0; });
@@ -1250,7 +1262,8 @@ function donutChart(items, centerLabel) {
             e("text", { x: cx, y: cy + 5, textAnchor: "middle", fontSize: 22, fontWeight: "bold", fill: "#1f4d2b" }, total),
             e("text", { x: cx, y: cy + 22, textAnchor: "middle", fontSize: 10, fill: "#666" }, centerLabel)
         ),
-        legendRow(shown.map(function(item) {
+        // legendAll = also list slices that are zero (so 'Shooting hours (0)' is visible)
+        legendRow((legendAll ? items : shown).map(function(item) {
             return { label: item.label, color: item.color, value: item.value };
         }))
     );
@@ -1584,6 +1597,314 @@ function antlerChart(sightings) {
         }),
         "#c0392b",
         1
+    );
+}
+
+// ---- Shooting-hours check and weekly power rankings ----
+
+// Readable shooting window for a camera on a date, e.g. "6:18 AM - 7:11 PM" (in this device's time zone)
+function shootingWindowText(camera, dateString) {
+
+    const p = dateString.split("-").map(Number);
+
+    const rise = sunEvent(p[0], p[1] - 1, p[2], camera.lat, camera.lng, true);
+    const set = sunEvent(p[0], p[1] - 1, p[2], camera.lat, camera.lng, false);
+
+    if (rise === null || set === null) {
+        return "the sun doesn't rise/set that day here";
+    }
+
+    const buffer = SCORE_CONFIG.shootingBufferMinutes * 60000;
+
+    function clock(timestamp) {
+        return new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+
+    return clock(rise - buffer) + " - " + clock(set + buffer);
+}
+
+// When a sighting happened as a timestamp (noon if it has no time); null if it has no date
+function sightingTime(sighting) {
+
+    if (!sighting.date) return null;
+
+    const t = new Date(sighting.date + "T" + (sighting.time || "12:00")).getTime();
+
+    return Number.isFinite(t) ? t : null;
+}
+
+// A camera's score as it stood at a moment in time:
+// only sightings up to that moment count, and older ones are faded by the half-life
+function cameraScoreAsOf(camera, asOf) {
+
+    return camera.sightings.reduce(function(total, sighting) {
+
+        const t = sightingTime(sighting);
+
+        if (t === null || t > asOf) return total;
+
+        return total + sightingScore(sighting, camera, asOf);
+    }, 0);
+}
+
+// Midnight on the Monday of the week that contains a timestamp
+function weekMonday(timestamp) {
+
+    const d = new Date(timestamp);
+
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+
+    return d;
+}
+
+// Every week (Monday to Sunday) from the first sighting to this week, newest last.
+// Each week's 'asOf' is the end of that week (or right now for the current week).
+function powerWeeks(cameras, nowMs) {
+
+    let earliest = null;
+
+    cameras.forEach(function(camera) {
+        camera.sightings.forEach(function(sighting) {
+            const t = sightingTime(sighting);
+            if (t !== null && (earliest === null || t < earliest)) earliest = t;
+        });
+    });
+
+    if (earliest === null) return [];
+
+    const weeks = [];
+    const last = weekMonday(nowMs).getTime();
+
+    for (let d = weekMonday(earliest); d.getTime() <= last; d.setDate(d.getDate() + 7)) {
+
+        const start = new Date(d.getTime());
+
+        const nextMonday = new Date(start.getTime());
+        nextMonday.setDate(nextMonday.getDate() + 7);
+
+        const sunday = new Date(start.getTime());
+        sunday.setDate(sunday.getDate() + 6);
+
+        weeks.push({
+            key: dayKey(start),
+            start: start,
+            asOf: Math.min(nextMonday.getTime() - 1, nowMs),
+            label: (start.getMonth() + 1) + "/" + start.getDate() +
+                " - " + (sunday.getMonth() + 1) + "/" + sunday.getDate()
+        });
+    }
+
+    // keep the most recent 26 weeks
+    return weeks.slice(-26);
+}
+
+// Cameras ranked by their score at the end of a week (highest first)
+function powerRanking(cameras, week) {
+
+    const rows = cameras.map(function(camera) {
+
+        return {
+            camera: camera,
+            score: cameraScoreAsOf(camera, week.asOf),
+            // deer actually seen during that week
+            deer: sumNumber(camera.sightings.filter(function(sighting) {
+                const t = sightingTime(sighting);
+                return t !== null && t >= week.start.getTime() && t <= week.asOf;
+            }))
+        };
+    });
+
+    rows.sort(function(a, b) {
+        return b.score - a.score || a.camera.name.localeCompare(b.camera.name);
+    });
+
+    rows.forEach(function(row, i) {
+        row.rank = i + 1;
+    });
+
+    return rows;
+}
+
+// Lines showing how the top cameras' ranks moved over the last 8 weeks (rank 1 at the top)
+function rankTrendChart(cameras, weeks, index) {
+
+    const shownWeeks = weeks.slice(Math.max(0, index - 7), index + 1);
+
+    if (shownWeeks.length < 2) {
+        return chartNote("Rank trends appear once there are two or more weeks of data.");
+    }
+
+    const table = shownWeeks.map(function(week) {
+        const byCamera = {};
+        powerRanking(cameras, week).forEach(function(row) {
+            byCamera[row.camera.id] = row;
+        });
+        return byCamera;
+    });
+
+    const finalRows = powerRanking(cameras, shownWeeks[shownWeeks.length - 1]);
+
+    // follow the six best cameras this week
+    const followed = finalRows.filter(function(row) { return row.score > 0; }).slice(0, 6);
+
+    if (!followed.length) return chartNote("No scores yet.");
+
+    const maxRank = Math.min(cameras.length, 10);
+    const palette = ["#1f4d2b", "#c0392b", "#2980b9", "#f39c12", "#8e44ad", "#16a085"];
+
+    const W = 640, H = 240, L = 34, R = 14, T = 14, B = 28;
+    const plotW = W - L - R;
+    const plotH = H - T - B;
+    const stepX = plotW / (shownWeeks.length - 1);
+
+    function xAt(i) { return L + i * stepX; }
+    function yAt(rank) { return T + (maxRank === 1 ? plotH / 2 : plotH * (Math.min(rank, maxRank) - 1) / (maxRank - 1)); }
+
+    const kids = [];
+
+    // a grid line and number for each rank
+    for (let r = 1; r <= maxRank; r++) {
+        kids.push(e("line", { key: "g" + r, x1: L, x2: W - R, y1: yAt(r), y2: yAt(r), stroke: "#e3e3e3" }));
+        kids.push(e("text", { key: "t" + r, x: L - 8, y: yAt(r) + 3, textAnchor: "end", fontSize: 10, fill: "#666" }, "#" + r));
+    }
+
+    // week labels along the bottom
+    shownWeeks.forEach(function(week, i) {
+        kids.push(e("text", { key: "w" + i, x: xAt(i), y: H - 8, textAnchor: "middle", fontSize: 10, fill: "#666" }, week.label.split(" - ")[0]));
+    });
+
+    // one colored line per followed camera
+    followed.forEach(function(row, c) {
+
+        const color = palette[c % palette.length];
+
+        const points = table.map(function(byCamera, i) {
+            return xAt(i) + "," + yAt(byCamera[row.camera.id].rank);
+        }).join(" ");
+
+        kids.push(e("polyline", { key: "l" + c, points: points, fill: "none", stroke: color, strokeWidth: 2.5 }));
+
+        table.forEach(function(byCamera, i) {
+            kids.push(e(
+                "circle",
+                { key: "p" + c + "-" + i, cx: xAt(i), cy: yAt(byCamera[row.camera.id].rank), r: 4, fill: color },
+                e("title", null, row.camera.name + " - week of " + shownWeeks[i].label.split(" - ")[0] + ": #" + byCamera[row.camera.id].rank)
+            ));
+        });
+    });
+
+    return e(
+        "div",
+        null,
+        e("svg", { viewBox: "0 0 " + W + " " + H, className: "chart-svg" }, kids),
+        legendRow(followed.map(function(row, c) {
+            return { label: row.camera.name, color: palette[c % palette.length] };
+        }))
+    );
+}
+
+// The whole Weekly Power Rankings card: week picker, ranking table, and the rank trend chart
+function powerRankingsView(cameras, weeks, weekKey, onPick) {
+
+    if (!cameras.length) return chartNote("Add cameras and sightings to see power rankings.");
+    if (!weeks.length) return chartNote("No sightings with dates yet.");
+
+    // the chosen week (defaults to the latest)
+    let index = weeks.findIndex(function(week) { return week.key === weekKey; });
+    if (index < 0) index = weeks.length - 1;
+
+    const week = weeks[index];
+    const rows = powerRanking(cameras, week);
+
+    // last week's ranks, to show movement
+    const previous = {};
+    if (index > 0) {
+        powerRanking(cameras, weeks[index - 1]).forEach(function(row) {
+            previous[row.camera.id] = row;
+        });
+    }
+
+    const medals = ["🥇", "🥈", "🥉"];
+
+    function moveCell(row) {
+
+        if (index === 0) return e("td", null, "-");
+
+        const before = previous[row.camera.id];
+
+        if (row.score <= 0) return e("td", null, "-");
+
+        if (!before || before.score <= 0) return e("td", { className: "move-up" }, "NEW");
+
+        const change = before.rank - row.rank;
+
+        if (change > 0) return e("td", { className: "move-up" }, "▲ " + change);
+        if (change < 0) return e("td", { className: "move-down" }, "▼ " + Math.abs(change));
+
+        return e("td", null, "-");
+    }
+
+    return e(
+        "div",
+        null,
+
+        e(
+            "div",
+            { className: "chart-filter" },
+            e(
+                "select",
+                {
+                    value: week.key,
+                    onChange: function(event) { onPick(event.target.value); }
+                },
+                weeks.slice().reverse().map(function(w) {
+                    return e(
+                        "option",
+                        { key: w.key, value: w.key },
+                        "Week of " + w.label + (w.key === weeks[weeks.length - 1].key ? " (this week)" : "")
+                    );
+                })
+            )
+        ),
+
+        e(
+            "div",
+            { className: "table-wrapper" },
+            e(
+                "table",
+                null,
+                e("thead", null, e(
+                    "tr",
+                    null,
+                    e("th", null, "Rank"),
+                    e("th", null, "Camera"),
+                    e("th", null, "Score"),
+                    e("th", null, "Move"),
+                    e("th", null, "Deer this week")
+                )),
+                e("tbody", null, rows.map(function(row) {
+                    return e(
+                        "tr",
+                        { key: row.camera.id },
+                        e("td", null, (row.score > 0 && row.rank <= 3 ? medals[row.rank - 1] + " " : "") + row.rank),
+                        e("td", null, row.camera.name),
+                        e("td", null, row.score.toFixed(1)),
+                        moveCell(row),
+                        e("td", null, row.deer)
+                    );
+                }))
+            )
+        ),
+
+        e(
+            "p",
+            { className: "empty", style: { marginBottom: "18px" } },
+            "Score as of the end of the week. Each sighting is weighted by deer type and shooting hours, and fades with a " +
+            SCORE_CONFIG.halfLifeDays + "-day half-life, so recent activity moves a camera up the rankings."
+        ),
+
+        rankTrendChart(cameras, weeks, index)
     );
 }
 
@@ -2113,7 +2434,8 @@ function App() {
     const [heatOn, setHeatOn] = useState(false);  // heat map switched on?
     const [heatFilter, setHeatFilter] = useState("All");  // which deer the heat map counts (All, Buck, Big Buck, Doe, Fawn)
     const [heatRadius, setHeatRadius] = useState(90);  // how wide each heat blotch is (bigger = blotches join up sooner)
-    const [chartCamera, setChartCamera] = useState("all");  // Charts page camera filter ('all' or a camera id)
+    const [chartCamera, setChartCamera] = useState("all");
+    const [powerWeek, setPowerWeek] = useState("latest");  // week picked in Weekly Power Rankings ('latest' = this week)  // Charts page camera filter ('all' or a camera id)
     const [timelapseOn, setTimelapseOn] = useState(false);  // heat map timelapse mode on?
     const [timelapseHour, setTimelapseHour] = useState(5);  // hour of the day (0-23) the timelapse is showing
     const [timelapsePlaying, setTimelapsePlaying] = useState(false);  // is the timelapse animating?
@@ -3751,7 +4073,8 @@ function App() {
             allSightings.push({
                 ...sighting,
                 cameraName: camera.name,
-                cameraId: camera.id
+                cameraId: camera.id,
+                inShootingHours: isShootingTime(sighting, camera)
             });
 
         });
@@ -4623,6 +4946,12 @@ function App() {
                                             e(
                                                 "th",
                                                 null,
+                                                "Shooting hours"
+                                            ),
+
+                                            e(
+                                                "th",
+                                                null,
                                                 "Notes"
                                             )
                                         )
@@ -4685,6 +5014,15 @@ function App() {
                                                         sighting.direction
                                                             ? directionText(sighting.direction)
                                                             : "—"
+                                                    ),
+
+                                                    // Was this sighting inside shooting hours?
+                                                    e(
+                                                        "td",
+                                                        null,
+                                                        sighting.inShootingHours
+                                                            ? "Yes"
+                                                            : "No"
                                                     ),
 
                                                     e(
@@ -5119,6 +5457,14 @@ function App() {
                     { className: "dashboard-grid" },
 
                     // Chart: Deer seen per day (last 30 days)
+                    // Chart: Weekly Power Rankings (cameras ranked by score, always uses every camera)
+                    chartCard(
+                        "power",
+                        "Weekly power rankings",
+                        powerRankingsView(cameras, powerWeeks(cameras, Date.now()), powerWeek, setPowerWeek),
+                        true
+                    ),
+
                     chartCard("daily", "Deer seen per day (last 30 days)", dailyChart(sightings), true),
 
                     // Chart: Deer type mix
@@ -5128,12 +5474,29 @@ function App() {
                     chartCard(
                         "shooting",
                         "Shooting hours vs other hours",
-                        donutChart(
-                            [
-                                { label: "Shooting hours", color: "#1f4d2b", value: shootingCount },
-                                { label: "Other hours", color: "#9e9e9e", value: otherCount }
-                            ],
-                            "deer"
+                        e(
+                            "div",
+                            null,
+                            donutChart(
+                                [
+                                    { label: "Shooting hours", color: "#1f4d2b", value: shootingCount },
+                                    { label: "Other hours", color: "#9e9e9e", value: otherCount }
+                                ],
+                                "deer",
+                                true
+                            ),
+                            // Worked example so you can check the window against your own sunrise/sunset times
+                            allSightings.length && cameraLookup[allSightings[0].cameraId]
+                                ? e(
+                                    "p",
+                                    { className: "empty", style: { marginTop: "12px", marginBottom: 0 } },
+                                    "Shooting hours = 30 min before sunrise to 30 min after sunset at each camera. Example: on " +
+                                    allSightings[0].date + " at " + allSightings[0].cameraName + " they were " +
+                                    shootingWindowText(cameraLookup[allSightings[0].cameraId], allSightings[0].date) +
+                                    ". Your device time zone: " +
+                                    (Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown") + "."
+                                )
+                                : null
                         ),
                         false
                     ),
@@ -6116,6 +6479,16 @@ function App() {
                                             )
                                         )
                                         : null,
+
+                                    // Was this sighting inside shooting hours?
+                                    e(
+                                        "p",
+                                        null,
+                                        "Shooting hours: " +
+                                        (isShootingTime(sighting, selectedCamera)
+                                            ? "Yes"
+                                            : "No")
+                                    ),
 
                                     sighting.notes
                                         ? e(
