@@ -6,7 +6,7 @@
 
 // Name of the saved-copies box. CHANGE THIS NUMBER (v4 -> v5 -> ...) every time
 // you upload a new index.html, so phones throw away the old copy and fetch the new one.
-const CACHE = "deer-cam-v4";
+const CACHE = "deer-cam-v5";
 
 // The files that make up the app itself; saved as soon as the worker installs
 const APP_SHELL = [
