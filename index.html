@@ -1718,7 +1718,7 @@ const DISMISSED_KEY = "deerDismissedEmails";    // emails you skipped (so they d
 let gmailAccessToken = null;
 
 function getGmailQuery() {
-    return localStorage.getItem(GMAIL_QUERY_KEY) || "label:Deer";
+    return localStorage.getItem(GMAIL_QUERY_KEY) || "from:cuddelink.com has:attachment newer_than:14d";
 }
 
 function getDismissedEmails() {
@@ -1954,9 +1954,366 @@ function matchCamera(cameras, text) {
     return best;
 }
 
-// Loads one email and turns it into a card: subject, camera guess, date/time guess, and small photos.
-// Returns null if the email has no photos.
-async function gmailLoadMessage(id, cameras) {
+// ---- Reading the date/time and camera name from the photo itself ----
+
+// Trail cameras save the exact time the picture was taken inside the JPEG file (called EXIF data).
+// This reads it from the raw file bytes. Returns { date: "2026-10-01", time: "14:35" } or null.
+function readExifDate(bytes) {
+
+    try {
+
+        // a JPEG file starts with the bytes FF D8
+        if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return null;
+
+        let pos = 2;
+
+        // walk through the JPEG's labelled sections until we find the "Exif" one
+        while (pos + 4 < bytes.length) {
+
+            if (bytes[pos] !== 0xFF) return null;
+
+            const marker = bytes[pos + 1];
+            const length = (bytes[pos + 2] << 8) | bytes[pos + 3];
+
+            if (
+                marker === 0xE1 &&
+                String.fromCharCode(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]) === "Exif"
+            ) {
+                return readTiffDate(bytes, pos + 10);
+            }
+
+            // FF DA = the picture itself starts here, so there is no Exif section
+            if (marker === 0xDA) return null;
+
+            pos += 2 + length;
+        }
+
+    } catch (error) {}
+
+    return null;
+}
+
+// Reads the date tags out of the Exif block ("base" is where its header starts)
+function readTiffDate(b, base) {
+
+    const little = b[base] === 0x49;   // "II" = numbers stored little-end first, "MM" = big-end first
+
+    function u16(o) { return little ? (b[o] | (b[o + 1] << 8)) : ((b[o] << 8) | b[o + 1]); }
+
+    function u32(o) {
+        return little
+            ? ((b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0)
+            : (((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0);
+    }
+
+    // reads the tags we care about from one directory of tags
+    function readDirectory(offset, wanted) {
+
+        const found = {};
+        const count = u16(base + offset);
+
+        for (let i = 0; i < count; i++) {
+
+            const entry = base + offset + 2 + i * 12;
+            const tag = u16(entry);
+            const type = u16(entry + 2);
+            const items = u32(entry + 4);
+
+            if (!wanted[tag]) continue;
+
+            if (type === 2) {
+                // text: stored right here if 4 characters or fewer, otherwise at the offset given
+                const at = items <= 4 ? entry + 8 : base + u32(entry + 8);
+                let text = "";
+                for (let k = 0; k < items - 1; k++) text += String.fromCharCode(b[at + k]);
+                found[tag] = text;
+            } else if (type === 4) {
+                found[tag] = u32(entry + 8);
+            }
+        }
+
+        return found;
+    }
+
+    const main = readDirectory(u32(base + 4), { 0x0132: true, 0x8769: true });
+
+    let text = null;
+
+    // "date taken" lives in a sub-directory; the plain "date" tag is the fallback
+    if (main[0x8769] !== undefined) {
+        text = readDirectory(main[0x8769], { 0x9003: true })[0x9003] || null;
+    }
+
+    text = text || main[0x0132] || null;
+
+    const m = text && /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/.exec(text);
+
+    if (!m || Number(m[1]) < 2000) return null;
+
+    return { date: m[1] + "-" + m[2] + "-" + m[3], time: m[4] + ":" + m[5] };
+}
+
+// Turns the text read from the photo's black strip into { name, date, time }.
+// The strip looks like:  10/1/2026  2:35PM  DOUBLE DUECE  004  CuddeLink
+function parseStripText(text) {
+
+    const flat = String(text || "").replace(/\s+/g, " ").trim();
+
+    const m = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\s+(\d{1,2}):(\d{2})\s*([AP])\s*M\s+(.+?)\s+(\d{3,4})\b/i.exec(flat);
+
+    if (!m) return null;
+
+    let hour = Number(m[4]);
+    const pm = m[6].toUpperCase() === "P";
+
+    if (hour === 12) hour = pm ? 12 : 0;
+    else if (pm) hour += 12;
+
+    let year = Number(m[3]);
+    if (year < 100) year += 2000;
+
+    const month = Number(m[1]);
+    const day = Number(m[2]);
+
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || Number(m[5]) > 59) return null;
+
+    return {
+        // camera name between the time and the picture number; stray symbols at the ends are removed
+        name: m[7].replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "").replace(/\s+/g, " ").toUpperCase(),
+        date: year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0"),
+        time: String(hour).padStart(2, "0") + ":" + m[5]
+    };
+}
+
+// "Double Deuce" and "DOUBLE DUECE" -> "DOUBLEDUECE" (so small differences in spacing and case don't matter)
+function normalizeName(name) {
+    return String(name || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+// How many single-letter edits turn one word into another (used to forgive small reading mistakes)
+function editDistance(a, b) {
+
+    const row = [];
+
+    for (let j = 0; j <= b.length; j++) row.push(j);
+
+    for (let i = 1; i <= a.length; i++) {
+
+        let previous = row[0];
+        row[0] = i;
+
+        for (let j = 1; j <= b.length; j++) {
+
+            const saved = row[j];
+
+            row[j] = Math.min(
+                row[j] + 1,
+                row[j - 1] + 1,
+                previous + (a[i - 1] === b[j - 1] ? 0 : 1)
+            );
+
+            previous = saved;
+        }
+    }
+
+    return row[b.length];
+}
+
+// Finds the camera whose name (or email match text) is the same as, or very close to, the name read from the photo.
+// Returns null if nothing is close enough or two cameras tie.
+function matchCameraByName(cameras, stripName) {
+
+    const target = normalizeName(stripName);
+
+    if (target.length < 2) return null;
+
+    const digitsOf = function(text) { return text.replace(/[^0-9]/g, ""); };
+
+    let best = null;
+    let bestDistance = Infinity;
+    let tie = false;
+
+    cameras.forEach(function(camera) {
+
+        [camera.name, camera.emailMatch].forEach(function(candidate) {
+
+            const norm = normalizeName(candidate);
+
+            if (!norm) return;
+
+            // "NORTH 1" and "NORTH 2" are different cameras even though they are one letter apart
+            if (digitsOf(norm) !== digitsOf(target)) return;
+
+            const distance = editDistance(norm, target);
+            const allowed = norm.length <= 4 ? 1 : Math.floor(norm.length / 4);
+
+            if (distance > allowed) return;
+
+            if (distance < bestDistance) {
+                best = camera;
+                bestDistance = distance;
+                tie = false;
+            } else if (distance === bestDistance && best && best.id !== camera.id) {
+                tie = true;
+            }
+        });
+    });
+
+    return tie ? null : best;
+}
+
+// The text reader (Tesseract) is only downloaded when it is first needed
+let ocrWorker = null;
+
+function loadTextReader() {
+
+    return new Promise(function(resolve, reject) {
+
+        if (window.Tesseract) {
+            resolve(window.Tesseract);
+            return;
+        }
+
+        const script = document.createElement("script");
+
+        script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+        script.onload = function() { resolve(window.Tesseract); };
+        script.onerror = function() { reject(new Error("Couldn't download the text reader")); };
+
+        document.head.appendChild(script);
+    });
+}
+
+async function getTextReader() {
+
+    if (ocrWorker) return ocrWorker;
+
+    const Tesseract = await loadTextReader();
+    const worker = await Tesseract.createWorker("eng");
+
+    // 6 = read it as one block of text; only allow the letters and symbols a time stamp uses
+    await worker.setParameters({
+        tessedit_pageseg_mode: "6",
+        tessedit_char_whitelist: "0123456789/:-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz "
+    });
+
+    ocrWorker = worker;
+
+    return worker;
+}
+
+// Frees the text reader's memory when we're done
+async function stopTextReader() {
+
+    if (!ocrWorker) return;
+
+    try {
+        await ocrWorker.terminate();
+    } catch (error) {}
+
+    ocrWorker = null;
+}
+
+// Cuts the black time stamp bar off the bottom of a photo and prepares it for reading:
+// enlarged, with the white-on-black text flipped to black-on-white (which text readers like better)
+function stripCanvas(dataUrl) {
+
+    return new Promise(function(resolve, reject) {
+
+        const img = new Image();
+
+        img.onload = function() {
+
+            const W = img.width;
+            const H = img.height;
+
+            // look at the bottom 12% of the picture
+            const look = Math.max(8, Math.round(H * 0.12));
+            const probe = document.createElement("canvas");
+
+            probe.width = W;
+            probe.height = look;
+
+            const probeContext = probe.getContext("2d");
+            probeContext.drawImage(img, 0, H - look, W, look, 0, 0, W, look);
+
+            const pixels = probeContext.getImageData(0, 0, W, look).data;
+
+            // walk upward from the bottom while the rows are dark: that is the black bar
+            let top = look;
+
+            for (let y = look - 1; y >= 0; y--) {
+
+                let sum = 0;
+                let count = 0;
+
+                for (let x = 0; x < W; x += 4) {
+                    const i = (y * W + x) * 4;
+                    sum += (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+                    count++;
+                }
+
+                if (sum / count < 70) top = y;
+                else break;
+            }
+
+            // no clear bar found: just use the bottom 5%
+            const stripHeight = look - top >= 6 ? look - top : Math.max(8, Math.round(H * 0.05));
+
+            // enlarge small photos so the letters are big enough to read
+            const scale = Math.max(1, Math.min(4, Math.round(2400 / W)));
+            const pad = 12;
+
+            const out = document.createElement("canvas");
+
+            out.width = W * scale + pad * 2;
+            out.height = stripHeight * scale + pad * 2;
+
+            const context = out.getContext("2d");
+
+            context.fillStyle = "#000";
+            context.fillRect(0, 0, out.width, out.height);
+            context.drawImage(img, 0, H - stripHeight, W, stripHeight, pad, pad, W * scale, stripHeight * scale);
+
+            // flip to black text on white (a black border becomes a white one)
+            const image = context.getImageData(0, 0, out.width, out.height);
+            const d = image.data;
+
+            for (let i = 0; i < d.length; i += 4) {
+                const gray = 255 - Math.round((d[i] + d[i + 1] + d[i + 2]) / 3);
+                d[i] = gray;
+                d[i + 1] = gray;
+                d[i + 2] = gray;
+                d[i + 3] = 255;
+            }
+
+            context.putImageData(image, 0, 0);
+
+            resolve(out);
+        };
+
+        img.onerror = function() { reject(new Error("Couldn't open the photo")); };
+
+        img.src = dataUrl;
+    });
+}
+
+// Reads the black strip on a photo. Returns { name, date, time } or null if it couldn't be read.
+async function readPhotoStrip(dataUrl) {
+
+    try {
+        const worker = await getTextReader();
+        const canvas = await stripCanvas(dataUrl);
+        const result = await worker.recognize(canvas);
+        return parseStripText(result.data.text);
+    } catch (error) {
+        return null;
+    }
+}
+
+// Loads one email and turns each photo in it into a card (before grouping).
+// 'known' lists photos we have already handled. Returns { photoCount, items }.
+async function gmailLoadMessage(id, cameras, known, useOcr, onStatus) {
 
     const message = await gmailGet("messages/" + id + "?format=full");
 
@@ -1986,18 +2343,29 @@ async function gmailLoadMessage(id, cameras) {
         });
     }
 
-    // photos: skip tiny images (logos and icons), keep up to four
+    // photos: skip tiny images (logos and icons); keep up to ten
     const imageParts = leaves.filter(function(part) {
         return part.mimeType && part.mimeType.indexOf("image/") === 0 &&
             part.body && (part.body.attachmentId || part.body.data) &&
             (!part.body.size || part.body.size >= 6000);
-    }).slice(0, 4);
+    }).slice(0, 10);
 
-    if (!imageParts.length) return null;
+    const subject = header("Subject");
+    const from = header("From");
+    const received = Number(message.internalDate) || Date.now();
+    const emailTime = parseEmailDateTime(subject + "\n" + bodyText, received);
 
-    const images = [];
+    const items = [];
 
-    for (const part of imageParts) {
+    for (let index = 0; index < imageParts.length; index++) {
+
+        const part = imageParts[index];
+        const photoId = id + "#" + index;
+
+        // already added as a sighting or skipped
+        if (known[photoId]) continue;
+
+        if (onStatus) onStatus("Reading photo " + (index + 1) + " of " + imageParts.length + " in an email...");
 
         let data = part.body.data;
 
@@ -2006,52 +2374,89 @@ async function gmailLoadMessage(id, cameras) {
             data = attachment.data;
         }
 
-        images.push(await shrinkImage("data:" + part.mimeType + ";base64," + base64UrlToBase64(data), 1000));
+        const base64 = base64UrlToBase64(data);
+        const original = "data:" + part.mimeType + ";base64," + base64;
+
+        // 1) the exact time the camera recorded inside the photo file
+        const exif = readExifDate(Uint8Array.from(atob(base64), function(c) { return c.charCodeAt(0); }));
+
+        // 2) the camera name (and a second copy of the time) from the black bar at the bottom of the photo
+        let strip = null;
+
+        if (useOcr) {
+            if (onStatus) onStatus("Reading the camera name on photo " + (index + 1) + " of " + imageParts.length + " (the first time downloads a text reader, about 10 MB)...");
+            strip = await readPhotoStrip(original);
+        }
+
+        // best available time: photo data, then the strip, then the email text, then when the email arrived
+        let when;
+        let source;
+
+        if (exif) { when = exif; source = "the photo's data"; }
+        else if (strip && strip.date) { when = strip; source = "the photo's time stamp bar"; }
+        else { when = emailTime; source = emailTime.source; }
+
+        const stripName = strip && strip.name ? strip.name : "";
+
+        // camera: the name on the photo first, then the name or match text anywhere in the email
+        const camera =
+            (stripName ? matchCameraByName(cameras, stripName) : null) ||
+            matchCamera(cameras, subject + "\n" + from + "\n" + (part.filename || "") + "\n" + bodyText);
+
+        items.push({
+            key: photoId,
+            photoIds: [photoId],
+            msgIds: [id],
+            subject: subject,
+            from: from,
+            filename: part.filename || "",
+            images: [await shrinkImage(original, 1000)],
+            ts: new Date(when.date + "T" + when.time).getTime(),
+            cameraId: camera ? String(camera.id) : "",
+            stripName: stripName,
+            date: when.date,
+            time: when.time,
+            timeSource: source,
+            deerType: "",
+            number: "1",
+            antlerPoints: "",
+            direction: ""
+        });
     }
 
-    const subject = header("Subject");
-    const from = header("From");
-    const received = Number(message.internalDate) || Date.now();
-    const when = parseEmailDateTime(subject + "\n" + bodyText, received);
-    const camera = matchCamera(cameras, subject + "\n" + from + "\n" + bodyText);
-
-    return {
-        key: id,
-        ids: [id],
-        subject: subject,
-        from: from,
-        images: images,
-        ts: new Date(when.date + "T" + when.time).getTime(),
-        cameraId: camera ? String(camera.id) : "",
-        date: when.date,
-        time: when.time,
-        timeSource: when.source,
-        deerType: "",
-        number: "1",
-        antlerPoints: "",
-        direction: ""
-    };
+    return { photoCount: imageParts.length, items: items };
 }
 
-// Trail cameras often send several photos for one deer. Photos from the same camera within
+// Trail cameras send several photos for one deer. Photos from the same camera within
 // 10 minutes of each other are combined into one card. Newest first.
 function groupEmails(items) {
 
     const sorted = items.slice().sort(function(a, b) { return a.ts - b.ts; });
     const groups = [];
 
+    // photos are grouped by the camera we matched, or by the name read from the photo if no camera matched
+    function groupKey(item) {
+        return item.cameraId ? "c" + item.cameraId : (item.stripName ? "s" + item.stripName : "");
+    }
+
     sorted.forEach(function(item) {
 
+        const key = groupKey(item);
+
         // the most recent card for this same camera (photos from other cameras may be mixed in between)
-        const last = item.cameraId
-            ? groups.slice().reverse().find(function(group) { return group.cameraId === item.cameraId; })
+        const last = key
+            ? groups.slice().reverse().find(function(group) { return groupKey(group) === key; })
             : null;
 
         if (last && item.ts - last.lastTs <= 10 * 60000) {
-            last.ids = last.ids.concat(item.ids);
+
+            last.photoIds = last.photoIds.concat(item.photoIds);
+            last.msgIds = last.msgIds.concat(item.msgIds.filter(function(m) { return last.msgIds.indexOf(m) === -1; }));
             last.images = last.images.concat(item.images).slice(0, 6);
             last.lastTs = item.ts;
+
         } else {
+
             groups.push(Object.assign({}, item, { lastTs: item.ts }));
         }
     });
@@ -2899,6 +3304,7 @@ function App() {
     const [emailBusy, setEmailBusy] = useState(false);  // true while fetching emails
     const [emailStatus, setEmailStatus] = useState("");  // progress / error text on the Email tab
     const [emailPhoto, setEmailPhoto] = useState(null);  // photo shown full screen (null = none)
+    const [emailOcr, setEmailOcr] = useState(function() { return localStorage.getItem("deerEmailOcr") !== "0"; });  // read the camera name from the photo's black bar?
     const [gmailQuery, setGmailQuery] = useState(getGmailQuery);  // the Gmail search used to find trail camera emails
     const [timelapseOn, setTimelapseOn] = useState(false);  // heat map timelapse mode on?
     const [timelapseHour, setTimelapseHour] = useState(5);  // hour of the day (0-23) the timelapse is showing
@@ -5869,7 +6275,7 @@ function App() {
         });
     }
 
-    // FETCH button: sign in to Gmail if needed, find trail camera emails we haven't handled, and make cards for them
+    // FETCH button: sign in to Gmail if needed, find trail camera emails we haven't handled, and make cards for their photos
     async function fetchEmails() {
 
         setEmailBusy(true);
@@ -5884,24 +6290,29 @@ function App() {
 
             setEmailStatus("Looking for new emails...");
 
-            // emails we already imported, skipped before, or that are already waiting below
+            // things we already handled: photos added as sightings, skipped photos/emails, and cards already waiting below
             const known = {};
 
             cameras.forEach(function(camera) {
                 camera.sightings.forEach(function(sighting) {
-                    (sighting.emailIds || (sighting.emailId ? [sighting.emailId] : [])).forEach(function(id) {
-                        known[id] = true;
-                    });
+
+                    (sighting.photoIds || []).forEach(function(id) { known[id] = true; });
+
+                    // sightings from the first version of the importer only have whole-email ids
+                    if (!sighting.photoIds) {
+                        (sighting.emailIds || (sighting.emailId ? [sighting.emailId] : [])).forEach(function(id) { known[id] = true; });
+                    }
                 });
             });
 
             getDismissedEmails().forEach(function(id) { known[id] = true; });
 
             emailItems.forEach(function(item) {
-                item.ids.forEach(function(id) { known[id] = true; });
+                item.msgIds.forEach(function(id) { known[id] = true; });
+                item.photoIds.forEach(function(id) { known[id] = true; });
             });
 
-            // walk through the search results until we have up to 20 emails we haven't seen
+            // walk through the search results until we have up to 20 emails we haven't finished with
             const ids = [];
             let pageToken = "";
 
@@ -5921,30 +6332,32 @@ function App() {
                 pageToken = list.nextPageToken;
             }
 
-            // read each one; emails without photos are remembered as skipped so we don't read them again
+            // read each email; ones with no photos, or whose photos are all handled, are remembered as finished
             const loaded = [];
-            const noPhotos = [];
+            const finished = [];
 
             for (let i = 0; i < ids.length; i++) {
 
                 setEmailStatus("Reading email " + (i + 1) + " of " + ids.length + "...");
 
-                const item = await gmailLoadMessage(ids[i], cameras);
+                const result = await gmailLoadMessage(ids[i], cameras, known, emailOcr, setEmailStatus);
 
-                if (item) loaded.push(item);
-                else noPhotos.push(ids[i]);
+                if (result.photoCount === 0 || result.items.length === 0) finished.push(ids[i]);
+                else result.items.forEach(function(item) { loaded.push(item); });
             }
 
-            if (noPhotos.length) addDismissedEmails(noPhotos);
+            if (finished.length) addDismissedEmails(finished);
+
+            const groups = groupEmails(loaded);
 
             setEmailItems(function(previous) {
-                return groupEmails(loaded).concat(previous);
+                return groups.concat(previous);
             });
 
             setEmailStatus(
                 loaded.length
-                    ? "Found " + loaded.length + " new photo email" + (loaded.length === 1 ? "" : "s") + "."
-                    : "No new photo emails found."
+                    ? "Found " + loaded.length + " new photo" + (loaded.length === 1 ? "" : "s") + " in " + groups.length + " card" + (groups.length === 1 ? "" : "s") + "."
+                    : "No new photos found."
             );
 
         } catch (error) {
@@ -5959,11 +6372,44 @@ function App() {
 
         } finally {
 
+            await stopTextReader();
             setEmailBusy(false);
         }
     }
 
-    // ADD SIGHTING button on an email card: save it as a sighting on the chosen camera
+    // When the last card from an email is finished, remember the whole email as done so it isn't read again
+    function finishEmails(card) {
+
+        const remaining = emailItems.filter(function(i) { return i.key !== card.key; });
+        const stillWaiting = {};
+
+        remaining.forEach(function(i) {
+            i.msgIds.forEach(function(m) { stillWaiting[m] = true; });
+        });
+
+        const done = card.msgIds.filter(function(m) { return !stillWaiting[m]; });
+
+        if (done.length) addDismissedEmails(done);
+    }
+
+    // Picking a camera on one card also picks it for other waiting cards that show the same camera name on the photo
+    function chooseEmailCamera(item, cameraId) {
+
+        setEmailItems(function(previous) {
+            return previous.map(function(other) {
+
+                if (other.key === item.key) return { ...other, cameraId: cameraId };
+
+                if (item.stripName && other.stripName === item.stripName && !other.cameraId) {
+                    return { ...other, cameraId: cameraId };
+                }
+
+                return other;
+            });
+        });
+    }
+
+    // ADD SIGHTING button on a card: save it as a sighting on the chosen camera
     function addEmailSighting(item) {
 
         const camera = cameras.find(function(c) { return String(c.id) === item.cameraId; });
@@ -5981,17 +6427,30 @@ function App() {
             antlerPoints: item.antlerPoints === "" ? null : Number(item.antlerPoints),
             direction: resolveDirection(item.direction, camera),
             notes: "From email: " + (item.subject || "").slice(0, 80),
-            // remembers which email(s) this came from, so they are never imported twice (also works across devices)
-            emailIds: item.ids
+            // remembers which email(s) and photo(s) this came from, so nothing is imported twice (also works across devices)
+            emailIds: item.msgIds,
+            photoIds: item.photoIds
         };
 
         setCameras(function(previous) {
             return previous.map(function(c) {
-                return c.id === camera.id
-                    ? { ...c, sightings: [...c.sightings, sighting] }
-                    : c;
+
+                if (c.id !== camera.id) return c;
+
+                // first time this camera is chosen for a name seen on a photo: remember the name so it matches automatically next time
+                const learn = item.stripName &&
+                    !(c.emailMatch || "").trim() &&
+                    normalizeName(item.stripName) !== normalizeName(c.name);
+
+                return {
+                    ...c,
+                    emailMatch: learn ? item.stripName : (c.emailMatch || ""),
+                    sightings: [...c.sightings, sighting]
+                };
             });
         });
+
+        finishEmails(item);
 
         setEmailItems(function(previous) {
             return previous.filter(function(i) { return i.key !== item.key; });
@@ -6001,7 +6460,9 @@ function App() {
     // SKIP button: no deer in the photo (or not wanted). Remember it so it doesn't come back.
     function skipEmailItem(item) {
 
-        addDismissedEmails(item.ids);
+        addDismissedEmails(item.photoIds);
+
+        finishEmails(item);
 
         setEmailItems(function(previous) {
             return previous.filter(function(i) { return i.key !== item.key; });
@@ -6047,13 +6508,22 @@ function App() {
                         "div",
                         { className: "email-fields" },
 
-                        e("p", { style: { margin: "0 0 10px", fontSize: "13px", color: "#555" } }, item.subject || "(no subject)"),
+                        e("p", { style: { margin: "0 0 4px", fontSize: "13px", color: "#555" } }, item.subject || "(no subject)"),
+
+                        // the camera name read from the black bar on the photo
+                        e(
+                            "p",
+                            { style: { margin: "0 0 10px", fontSize: "12px", color: "#777" } },
+                            item.stripName
+                                ? "Camera name on the photo: " + item.stripName
+                                : "Camera name on the photo: not read"
+                        ),
 
                         field("Camera", e(
                             "select",
                             {
                                 value: item.cameraId,
-                                onChange: function(event) { updateEmailItem(item.key, { cameraId: event.target.value }); }
+                                onChange: function(event) { chooseEmailCamera(item, event.target.value); }
                             },
                             e("option", { value: "" }, "Choose camera..."),
                             cameras.map(function(c) {
@@ -6076,8 +6546,9 @@ function App() {
                         e(
                             "p",
                             { style: { margin: "-6px 0 12px", fontSize: "12px", color: "#777" } },
-                            "Time taken from " + item.timeSource + ". Check it against the time stamped on the photo." +
-                            (item.ids.length > 1 ? " (" + item.ids.length + " emails in a row grouped together.)" : "")
+                            "Time taken from " + item.timeSource +
+                            (item.timeSource.indexOf("photo") !== -1 ? "." : ". Check it against the time stamped on the photo.") +
+                            (item.photoIds.length > 1 ? " (" + item.photoIds.length + " photos in a row grouped together.)" : "")
                         ),
 
                         field("Deer type", e(
@@ -6168,7 +6639,7 @@ function App() {
                     field("Gmail search", e("input", {
                         type: "text",
                         value: gmailQuery,
-                        placeholder: "has:attachment newer_than:14d",
+                        placeholder: "from:cuddelink.com has:attachment newer_than:14d",
                         onChange: function(event) {
                             setGmailQuery(event.target.value);
                             localStorage.setItem(GMAIL_QUERY_KEY, event.target.value);
@@ -6179,6 +6650,22 @@ function App() {
                         "p",
                         { className: "empty", style: { margin: "-4px 0 12px" } },
                         "Narrow it to your camera's emails, for example from:alerts@your-camera.com or label:trail-cams (the same search box you use in Gmail)."
+                    ),
+
+                    // Option: read the camera name from the black bar on each photo
+                    e(
+                        "label",
+                        { style: { display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "13px", margin: "0 0 14px" } },
+                        e("input", {
+                            type: "checkbox",
+                            checked: emailOcr,
+                            style: { marginTop: "2px" },
+                            onChange: function(event) {
+                                setEmailOcr(event.target.checked);
+                                localStorage.setItem("deerEmailOcr", event.target.checked ? "1" : "0");
+                            }
+                        }),
+                        "Read the camera name from the black bar on each photo (downloads a text reader the first time, about 10 MB)"
                     ),
 
                     e("button", {
