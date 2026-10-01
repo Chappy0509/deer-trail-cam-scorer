@@ -532,6 +532,55 @@ th {
 }
 
 /* Activity-by-hour chart: 24 touching columns sitting on a baseline */
+/* Email import: one card per photo email (photos on the left, fields on the right) */
+.email-card {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+/* The photos of an email */
+.email-photos {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    max-width: 340px;
+    align-content: flex-start;
+}
+
+.email-photos img {
+    width: 164px;
+    height: 124px;
+    object-fit: cover;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+/* The fields to fill in for an email */
+.email-fields {
+    flex: 1;
+    min-width: 260px;
+}
+
+/* Full screen photo viewer */
+.photo-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.88);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.photo-overlay img {
+    max-width: 96%;
+    max-height: 96%;
+}
+
 .hour-chart {
     display: flex;
     align-items: flex-end;
@@ -1600,6 +1649,416 @@ function antlerChart(sightings) {
     );
 }
 
+// ---- Camera facing direction + relative directions ----
+
+// "Left to right" etc. only make sense once we know which way the camera faces
+const RELATIVE_DIRECTIONS = [
+    { value: "rel:LR", label: "Left to right", offset: 90 },
+    { value: "rel:RL", label: "Right to left", offset: -90 },
+    { value: "rel:TOWARD", label: "Toward the camera", offset: 180 },
+    { value: "rel:AWAY", label: "Away from the camera", offset: 0 }
+];
+
+// Turns a choice like "rel:LR" into a compass direction using the camera's facing direction.
+// Normal compass values pass through unchanged.
+function resolveDirection(value, camera) {
+
+    if (!value || value.indexOf("rel:") !== 0) return value;
+
+    if (!camera || !DIRECTION_BEARINGS.hasOwnProperty(camera.facing)) return "";
+
+    const relative = RELATIVE_DIRECTIONS.find(function(r) { return r.value === value; });
+
+    if (!relative) return "";
+
+    const bearing = ((DIRECTION_BEARINGS[camera.facing] + relative.offset) % 360 + 360) % 360;
+
+    return DIRECTIONS[Math.round(bearing / 45) % 8].value;
+}
+
+// The extra dropdown choices (greyed out until the camera's facing direction is set)
+function relativeDirectionOptions(camera) {
+
+    const known = camera && DIRECTION_BEARINGS.hasOwnProperty(camera.facing);
+
+    return RELATIVE_DIRECTIONS.map(function(r) {
+        return e(
+            "option",
+            { key: r.value, value: r.value, disabled: !known },
+            r.label + (known ? "" : " (set 'Camera faces' first)")
+        );
+    });
+}
+
+// Corner points of the faint wedge drawn on the map to show where a camera points
+// (60 degrees wide, 45 metres long)
+function facingWedge(camera) {
+
+    const bearing = DIRECTION_BEARINGS[camera.facing];
+    const metres = 45;
+    const points = [[camera.lat, camera.lng]];
+
+    for (let a = -30; a <= 30; a += 10) {
+        const rad = (bearing + a) * Math.PI / 180;
+        points.push([
+            camera.lat + metres * Math.cos(rad) / 111320,
+            camera.lng + metres * Math.sin(rad) / (111320 * Math.cos(camera.lat * Math.PI / 180))
+        ]);
+    }
+
+    return points;
+}
+
+// ---- Gmail import helpers ----
+const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";   // read-only access to your email
+const GMAIL_QUERY_KEY = "deerGmailQuery";       // where the Gmail search text is saved
+const DISMISSED_KEY = "deerDismissedEmails";    // emails you skipped (so they don't come back)
+
+// Gmail's own pass (separate from the Drive one; kept in memory only)
+let gmailAccessToken = null;
+
+function getGmailQuery() {
+    return localStorage.getItem(GMAIL_QUERY_KEY) || "has:attachment newer_than:14d";
+}
+
+function getDismissedEmails() {
+    try {
+        return JSON.parse(localStorage.getItem(DISMISSED_KEY)) || [];
+    } catch {
+        return [];
+    }
+}
+
+function addDismissedEmails(ids) {
+    const all = getDismissedEmails().concat(ids).slice(-3000);
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(all));
+}
+
+// Opens Google's permission popup for Gmail and resolves when we have a pass.
+// Must be called straight from a button tap so the browser allows the popup.
+function gmailSignIn() {
+
+    return new Promise(function(resolve, reject) {
+
+        if (!window.google || !window.google.accounts) {
+            reject(new Error("Google's sign-in script hasn't loaded yet. Check your connection and try again."));
+            return;
+        }
+
+        if (!clientIdLooksValid(getClientId())) {
+            reject(new Error("Set your Google Client ID first (the gear button in the header)."));
+            return;
+        }
+
+        const client = google.accounts.oauth2.initTokenClient({
+            client_id: getClientId(),
+            scope: GMAIL_SCOPE,
+            callback: function(response) {
+
+                if (response && response.access_token) {
+
+                    if (!google.accounts.oauth2.hasGrantedAllScopes(response, GMAIL_SCOPE)) {
+                        reject(new Error("Gmail access wasn't granted. Tick the box allowing read access to your email and try again."));
+                        return;
+                    }
+
+                    gmailAccessToken = response.access_token;
+                    resolve(response.access_token);
+
+                } else {
+
+                    reject(new Error("Google sign-in failed: " + ((response && (response.error_description || response.error)) || "unknown error")));
+                }
+            },
+            error_callback: function(error) {
+                reject(new Error(
+                    error && error.type === "popup_closed"
+                        ? "The Google sign-in window was closed before it finished."
+                        : "Google sign-in failed, or your browser blocked the popup."
+                ));
+            }
+        });
+
+        client.requestAccessToken({ prompt: "" });
+    });
+}
+
+// Reads one thing from the Gmail API (throws a readable error if it fails)
+async function gmailGet(path) {
+
+    const response = await fetch(
+        "https://gmail.googleapis.com/gmail/v1/users/me/" + path,
+        { headers: { Authorization: "Bearer " + gmailAccessToken } }
+    );
+
+    if (!response.ok) {
+
+        let detail = "";
+
+        try {
+            const body = await response.json();
+            if (body && body.error && body.error.message) detail = body.error.message;
+        } catch (error) {}
+
+        let message = "Gmail request failed (" + response.status + ")" + (detail ? ": " + detail : "");
+
+        if (response.status === 403) {
+            message += " - make sure the Gmail API is enabled in your Google Cloud project and the gmail.readonly permission was granted.";
+        }
+
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
+    }
+
+    return response.json();
+}
+
+// Gmail sends data as "base64url"; turn it into plain base64 text
+function base64UrlToBase64(data) {
+
+    let b64 = data.replace(/-/g, "+").replace(/_/g, "/");
+
+    while (b64.length % 4) b64 += "=";
+
+    return b64;
+}
+
+// Decodes Gmail's base64url text into a normal string
+function decodeGmailText(data) {
+
+    try {
+        const binary = atob(base64UrlToBase64(data));
+        const bytes = Uint8Array.from(binary, function(c) { return c.charCodeAt(0); });
+        return new TextDecoder("utf-8").decode(bytes);
+    } catch (error) {
+        return "";
+    }
+}
+
+function stripHtml(html) {
+    return html
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/\s+/g, " ");
+}
+
+// Shrinks a photo to a small JPEG so a page full of photos doesn't use up the phone's memory
+function shrinkImage(dataUrl, maxSide) {
+
+    return new Promise(function(resolve) {
+
+        const img = new Image();
+
+        img.onload = function() {
+
+            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+            const canvas = document.createElement("canvas");
+
+            canvas.width = Math.max(1, Math.round(img.width * scale));
+            canvas.height = Math.max(1, Math.round(img.height * scale));
+            canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            resolve(canvas.toDataURL("image/jpeg", 0.75));
+        };
+
+        img.onerror = function() {
+            resolve(dataUrl);
+        };
+
+        img.src = dataUrl;
+    });
+}
+
+const MONTH_NUMBERS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+
+// Looks through the email text for a date and time (several common formats).
+// If none is found (or it's wildly different from when the email arrived), uses the time the email arrived.
+function parseEmailDateTime(text, receivedTs) {
+
+    const candidates = [];
+
+    function add(year, month, day, hour, minute, ampm) {
+
+        let y = Number(year), mo = Number(month), d = Number(day), h = Number(hour), mi = Number(minute);
+
+        if (y < 100) y += 2000;
+
+        if (ampm) {
+            const pm = ampm.toUpperCase() === "PM";
+            if (h === 12) h = pm ? 12 : 0;
+            else if (pm) h += 12;
+        }
+
+        if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return;
+
+        const date = new Date(y, mo - 1, d, h, mi);
+
+        if (date.getMonth() !== mo - 1) return;
+
+        candidates.push(date);
+    }
+
+    let m;
+
+    // 2026-09-28 06:45 (or with a T between)
+    const iso = /(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/gi;
+    while ((m = iso.exec(text))) add(m[1], m[2], m[3], m[4], m[5], m[6]);
+
+    // 09/28/2026 6:45 PM  (month first, as in the US)
+    const us = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})[ ,T]+(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/gi;
+    while ((m = us.exec(text))) add(m[3], m[1], m[2], m[4], m[5], m[6]);
+
+    // Sep 28, 2026 6:45 PM
+    const named = /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})[ ,]+(?:at\s+)?(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/gi;
+    while ((m = named.exec(text))) add(m[3], MONTH_NUMBERS[m[1].toLowerCase()], m[2], m[4], m[5], m[6]);
+
+    // the first one within 3 days of the email arriving is believable
+    const believable = candidates.find(function(date) {
+        return Math.abs(date.getTime() - receivedTs) <= 3 * 86400000;
+    });
+
+    const chosen = believable || new Date(receivedTs);
+
+    return {
+        date: dayKey(chosen),
+        time: String(chosen.getHours()).padStart(2, "0") + ":" + String(chosen.getMinutes()).padStart(2, "0"),
+        source: believable ? "the email text" : "when the email arrived"
+    };
+}
+
+// Finds which camera an email is about by looking for its name (or its 'email match text') in the email
+function matchCamera(cameras, text) {
+
+    const lower = text.toLowerCase();
+    let best = null;
+    let bestLength = 0;
+
+    cameras.forEach(function(camera) {
+
+        const needle = (camera.emailMatch || camera.name || "").trim().toLowerCase();
+
+        if (!needle) return;
+
+        const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+        // whole-word match so a camera called "A" doesn't match every email
+        if (new RegExp("(^|[^a-z0-9])" + escaped + "([^a-z0-9]|$)").test(lower) && needle.length > bestLength) {
+            best = camera;
+            bestLength = needle.length;
+        }
+    });
+
+    return best;
+}
+
+// Loads one email and turns it into a card: subject, camera guess, date/time guess, and small photos.
+// Returns null if the email has no photos.
+async function gmailLoadMessage(id, cameras) {
+
+    const message = await gmailGet("messages/" + id + "?format=full");
+
+    function header(name) {
+        const found = ((message.payload && message.payload.headers) || []).find(function(h) {
+            return h.name.toLowerCase() === name.toLowerCase();
+        });
+        return found ? found.value : "";
+    }
+
+    // flatten the email's nested parts into a simple list
+    const leaves = [];
+    (function collect(part) {
+        if (!part) return;
+        if (part.parts && part.parts.length) part.parts.forEach(collect);
+        else leaves.push(part);
+    })(message.payload);
+
+    // the readable text of the email (plain text if there is some, otherwise the HTML with tags removed)
+    let bodyText = "";
+    leaves.forEach(function(part) {
+        if (part.mimeType === "text/plain" && part.body && part.body.data) bodyText += " " + decodeGmailText(part.body.data);
+    });
+    if (!bodyText.trim()) {
+        leaves.forEach(function(part) {
+            if (part.mimeType === "text/html" && part.body && part.body.data) bodyText += " " + stripHtml(decodeGmailText(part.body.data));
+        });
+    }
+
+    // photos: skip tiny images (logos and icons), keep up to four
+    const imageParts = leaves.filter(function(part) {
+        return part.mimeType && part.mimeType.indexOf("image/") === 0 &&
+            part.body && (part.body.attachmentId || part.body.data) &&
+            (!part.body.size || part.body.size >= 6000);
+    }).slice(0, 4);
+
+    if (!imageParts.length) return null;
+
+    const images = [];
+
+    for (const part of imageParts) {
+
+        let data = part.body.data;
+
+        if (!data) {
+            const attachment = await gmailGet("messages/" + id + "/attachments/" + part.body.attachmentId);
+            data = attachment.data;
+        }
+
+        images.push(await shrinkImage("data:" + part.mimeType + ";base64," + base64UrlToBase64(data), 1000));
+    }
+
+    const subject = header("Subject");
+    const from = header("From");
+    const received = Number(message.internalDate) || Date.now();
+    const when = parseEmailDateTime(subject + "\n" + bodyText, received);
+    const camera = matchCamera(cameras, subject + "\n" + from + "\n" + bodyText);
+
+    return {
+        key: id,
+        ids: [id],
+        subject: subject,
+        from: from,
+        images: images,
+        ts: new Date(when.date + "T" + when.time).getTime(),
+        cameraId: camera ? String(camera.id) : "",
+        date: when.date,
+        time: when.time,
+        timeSource: when.source,
+        deerType: "",
+        number: "1",
+        antlerPoints: "",
+        direction: ""
+    };
+}
+
+// Trail cameras often send several photos for one deer. Photos from the same camera within
+// 10 minutes of each other are combined into one card. Newest first.
+function groupEmails(items) {
+
+    const sorted = items.slice().sort(function(a, b) { return a.ts - b.ts; });
+    const groups = [];
+
+    sorted.forEach(function(item) {
+
+        // the most recent card for this same camera (photos from other cameras may be mixed in between)
+        const last = item.cameraId
+            ? groups.slice().reverse().find(function(group) { return group.cameraId === item.cameraId; })
+            : null;
+
+        if (last && item.ts - last.lastTs <= 10 * 60000) {
+            last.ids = last.ids.concat(item.ids);
+            last.images = last.images.concat(item.images).slice(0, 6);
+            last.lastTs = item.ts;
+        } else {
+            groups.push(Object.assign({}, item, { lastTs: item.ts }));
+        }
+    });
+
+    return groups.reverse();
+}
+
 // ---- Shooting-hours check and weekly power rankings ----
 
 // Readable shooting window for a camera on a date, e.g. "6:18 AM - 7:11 PM" (in this device's time zone)
@@ -2114,9 +2573,9 @@ function getCameras() {
                 name: camera.name || "Camera",
                 lat: Number(camera.lat),
                 lng: Number(camera.lng),
-                sightings: Array.isArray(camera.sightings)
-                    ? camera.sightings
-                    : []
+                sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
+                facing: camera.facing || "",
+                emailMatch: camera.emailMatch || ""
             };
         // Drop cameras with a broken position
         }).filter(function(camera) {
@@ -2434,8 +2893,13 @@ function App() {
     const [heatOn, setHeatOn] = useState(false);  // heat map switched on?
     const [heatFilter, setHeatFilter] = useState("All");  // which deer the heat map counts (All, Buck, Big Buck, Doe, Fawn)
     const [heatRadius, setHeatRadius] = useState(90);  // how wide each heat blotch is (bigger = blotches join up sooner)
-    const [chartCamera, setChartCamera] = useState("all");
-    const [powerWeek, setPowerWeek] = useState("latest");  // week picked in Weekly Power Rankings ('latest' = this week)  // Charts page camera filter ('all' or a camera id)
+    const [chartCamera, setChartCamera] = useState("all");  // Charts page camera filter ('all' or a camera id)
+    const [powerWeek, setPowerWeek] = useState("latest");  // week picked in Weekly Power Rankings ('latest' = this week)
+    const [emailItems, setEmailItems] = useState([]);  // photo emails waiting to be turned into sightings
+    const [emailBusy, setEmailBusy] = useState(false);  // true while fetching emails
+    const [emailStatus, setEmailStatus] = useState("");  // progress / error text on the Email tab
+    const [emailPhoto, setEmailPhoto] = useState(null);  // photo shown full screen (null = none)
+    const [gmailQuery, setGmailQuery] = useState(getGmailQuery);  // the Gmail search used to find trail camera emails
     const [timelapseOn, setTimelapseOn] = useState(false);  // heat map timelapse mode on?
     const [timelapseHour, setTimelapseHour] = useState(5);  // hour of the day (0-23) the timelapse is showing
     const [timelapsePlaying, setTimelapsePlaying] = useState(false);  // is the timelapse animating?
@@ -2475,6 +2939,7 @@ function App() {
     const showStandsRef = useRef(true);  // copy of showStands
     const heatLayerRef = useRef(null);  // the heat map layer
     const arrowMarkersRef = useRef({});  // camera id -> its direction arrow
+    const facingLayersRef = useRef({});  // camera id -> the wedge showing which way it points
     const colorsRef = useRef(colors);  // copy of the colors for code that runs outside a redraw
     colorsRef.current = colors;
     // Keep the ref copies up to date on every redraw
@@ -2599,9 +3064,9 @@ function App() {
                 name: camera.name || "Camera",
                 lat: Number(camera.lat),
                 lng: Number(camera.lng),
-                sightings: Array.isArray(camera.sightings)
-                    ? camera.sightings
-                    : []
+                sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
+                facing: camera.facing || "",
+                emailMatch: camera.emailMatch || ""
             };
         }).filter(function(camera) {
             return Number.isFinite(camera.lat) &&
@@ -3069,6 +3534,7 @@ function App() {
             heatLayerRef.current = null;
             arrowMarkersRef.current = {};
             standMarkersRef.current = {};
+            facingLayersRef.current = {};
         }
 
         if (mapRef.current) {
@@ -3475,6 +3941,39 @@ function App() {
 
     }, [cameras, colors, mapVersion]);
 
+    // CAMERA FACING: draw a faint wedge from each camera showing which way it points
+    useEffect(function() {
+
+        Object.values(facingLayersRef.current).forEach(function(layer) {
+            try {
+                layer.remove();
+            } catch (error) {}
+        });
+
+        facingLayersRef.current = {};
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        cameras.forEach(function(camera) {
+
+            if (!DIRECTION_BEARINGS.hasOwnProperty(camera.facing)) return;
+
+            facingLayersRef.current[camera.id] = L.polygon(
+                facingWedge(camera),
+                {
+                    color: colors.camera,
+                    weight: 1,
+                    fillColor: colors.camera,
+                    fillOpacity: 0.25,
+                    interactive: false
+                }
+            ).addTo(map);
+        });
+
+    }, [cameras, colors, mapVersion]);
+
     // STANDS: make the triangles on the map match the stands list (add, move, remove, show/hide)
     useEffect(function() {
 
@@ -3694,7 +4193,7 @@ function App() {
                 antlerPoints === ""
                     ? null
                     : Number(antlerPoints),
-            direction: direction,
+            direction: resolveDirection(direction, selectedCamera),
             notes: notes
         };
 
@@ -3969,12 +4468,9 @@ function App() {
                             name: camera.name,
                             lat: Number(camera.lat),
                             lng: Number(camera.lng),
-                            sightings:
-                                Array.isArray(
-                                    camera.sightings
-                                )
-                                    ? camera.sightings
-                                    : []
+                            sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
+                            facing: camera.facing || "",
+                            emailMatch: camera.emailMatch || ""
                         };
 
                     });
@@ -5351,6 +5847,376 @@ function App() {
         );
     }
 
+    // Changes one camera's details (facing direction, email match text...)
+    function updateCamera(id, patch) {
+
+        setCameras(function(previous) {
+            return previous.map(function(camera) {
+                return camera.id === id ? { ...camera, ...patch } : camera;
+            });
+        });
+    }
+
+    // ---- Email import ----
+
+    // Changes the fields of one waiting email card as you fill them in
+    function updateEmailItem(key, patch) {
+
+        setEmailItems(function(previous) {
+            return previous.map(function(item) {
+                return item.key === key ? { ...item, ...patch } : item;
+            });
+        });
+    }
+
+    // FETCH button: sign in to Gmail if needed, find trail camera emails we haven't handled, and make cards for them
+    async function fetchEmails() {
+
+        setEmailBusy(true);
+        setEmailStatus("Connecting to Gmail...");
+
+        try {
+
+            // ask Google for permission the first time (this has to happen right after the tap)
+            if (!gmailAccessToken) {
+                await gmailSignIn();
+            }
+
+            setEmailStatus("Looking for new emails...");
+
+            // emails we already imported, skipped before, or that are already waiting below
+            const known = {};
+
+            cameras.forEach(function(camera) {
+                camera.sightings.forEach(function(sighting) {
+                    (sighting.emailIds || (sighting.emailId ? [sighting.emailId] : [])).forEach(function(id) {
+                        known[id] = true;
+                    });
+                });
+            });
+
+            getDismissedEmails().forEach(function(id) { known[id] = true; });
+
+            emailItems.forEach(function(item) {
+                item.ids.forEach(function(id) { known[id] = true; });
+            });
+
+            // walk through the search results until we have up to 20 emails we haven't seen
+            const ids = [];
+            let pageToken = "";
+
+            for (let page = 0; page < 6 && ids.length < 20; page++) {
+
+                const list = await gmailGet(
+                    "messages?maxResults=50&q=" + encodeURIComponent(gmailQuery) +
+                    (pageToken ? "&pageToken=" + pageToken : "")
+                );
+
+                (list.messages || []).forEach(function(message) {
+                    if (!known[message.id] && ids.length < 20) ids.push(message.id);
+                });
+
+                if (!list.nextPageToken) break;
+
+                pageToken = list.nextPageToken;
+            }
+
+            // read each one; emails without photos are remembered as skipped so we don't read them again
+            const loaded = [];
+            const noPhotos = [];
+
+            for (let i = 0; i < ids.length; i++) {
+
+                setEmailStatus("Reading email " + (i + 1) + " of " + ids.length + "...");
+
+                const item = await gmailLoadMessage(ids[i], cameras);
+
+                if (item) loaded.push(item);
+                else noPhotos.push(ids[i]);
+            }
+
+            if (noPhotos.length) addDismissedEmails(noPhotos);
+
+            setEmailItems(function(previous) {
+                return groupEmails(loaded).concat(previous);
+            });
+
+            setEmailStatus(
+                loaded.length
+                    ? "Found " + loaded.length + " new photo email" + (loaded.length === 1 ? "" : "s") + "."
+                    : "No new photo emails found."
+            );
+
+        } catch (error) {
+
+            // a 401 means the Gmail pass expired; the next tap asks for a new one
+            if (error && error.status === 401) {
+                gmailAccessToken = null;
+                setEmailStatus("Your Gmail session expired. Tap Fetch again.");
+            } else {
+                setEmailStatus("Error: " + (error && error.message ? error.message : "something went wrong"));
+            }
+
+        } finally {
+
+            setEmailBusy(false);
+        }
+    }
+
+    // ADD SIGHTING button on an email card: save it as a sighting on the chosen camera
+    function addEmailSighting(item) {
+
+        const camera = cameras.find(function(c) { return String(c.id) === item.cameraId; });
+
+        if (!camera) { alert("Choose a camera first."); return; }
+        if (!item.deerType) { alert("Choose the deer type first."); return; }
+        if (!item.date || !item.time) { alert("Enter the date and time."); return; }
+
+        const sighting = {
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            date: item.date,
+            time: item.time,
+            deerType: item.deerType,
+            number: Number(item.number) || 1,
+            antlerPoints: item.antlerPoints === "" ? null : Number(item.antlerPoints),
+            direction: resolveDirection(item.direction, camera),
+            notes: "From email: " + (item.subject || "").slice(0, 80),
+            // remembers which email(s) this came from, so they are never imported twice (also works across devices)
+            emailIds: item.ids
+        };
+
+        setCameras(function(previous) {
+            return previous.map(function(c) {
+                return c.id === camera.id
+                    ? { ...c, sightings: [...c.sightings, sighting] }
+                    : c;
+            });
+        });
+
+        setEmailItems(function(previous) {
+            return previous.filter(function(i) { return i.key !== item.key; });
+        });
+    }
+
+    // SKIP button: no deer in the photo (or not wanted). Remember it so it doesn't come back.
+    function skipEmailItem(item) {
+
+        addDismissedEmails(item.ids);
+
+        setEmailItems(function(previous) {
+            return previous.filter(function(i) { return i.key !== item.key; });
+        });
+    }
+
+    // THE EMAIL TAB: search settings, a fetch button, and one card per photo email
+    function emailPage() {
+
+        // one labelled field
+        function field(label, control) {
+            return e("div", { className: "form-group" }, e("label", null, label), control);
+        }
+
+        function card(item) {
+
+            const camera = cameras.find(function(c) { return String(c.id) === item.cameraId; });
+
+            return e(
+                "div",
+                { key: item.key, className: "dashboard-card", style: { marginBottom: "14px" } },
+
+                e(
+                    "div",
+                    { className: "email-card" },
+
+                    // the photos (tap one to see it full screen)
+                    e(
+                        "div",
+                        { className: "email-photos" },
+                        item.images.map(function(src, i) {
+                            return e("img", {
+                                key: i,
+                                src: src,
+                                alt: "Trail camera photo",
+                                onClick: function() { setEmailPhoto(src); }
+                            });
+                        })
+                    ),
+
+                    // the fields to check / fill in
+                    e(
+                        "div",
+                        { className: "email-fields" },
+
+                        e("p", { style: { margin: "0 0 10px", fontSize: "13px", color: "#555" } }, item.subject || "(no subject)"),
+
+                        field("Camera", e(
+                            "select",
+                            {
+                                value: item.cameraId,
+                                onChange: function(event) { updateEmailItem(item.key, { cameraId: event.target.value }); }
+                            },
+                            e("option", { value: "" }, "Choose camera..."),
+                            cameras.map(function(c) {
+                                return e("option", { key: c.id, value: String(c.id) }, c.name);
+                            })
+                        )),
+
+                        field("Date", e("input", {
+                            type: "date",
+                            value: item.date,
+                            onChange: function(event) { updateEmailItem(item.key, { date: event.target.value }); }
+                        })),
+
+                        field("Time", e("input", {
+                            type: "time",
+                            value: item.time,
+                            onChange: function(event) { updateEmailItem(item.key, { time: event.target.value }); }
+                        })),
+
+                        e(
+                            "p",
+                            { style: { margin: "-6px 0 12px", fontSize: "12px", color: "#777" } },
+                            "Time taken from " + item.timeSource + ". Check it against the time stamped on the photo." +
+                            (item.ids.length > 1 ? " (" + item.ids.length + " emails in a row grouped together.)" : "")
+                        ),
+
+                        field("Deer type", e(
+                            "select",
+                            {
+                                value: item.deerType,
+                                onChange: function(event) { updateEmailItem(item.key, { deerType: event.target.value }); }
+                            },
+                            e("option", { value: "" }, "Choose..."),
+                            e("option", null, "Big Buck"),
+                            e("option", null, "Buck"),
+                            e("option", null, "Doe"),
+                            e("option", null, "Fawn"),
+                            e("option", null, "Unknown")
+                        )),
+
+                        field("Number of deer", e("input", {
+                            type: "number",
+                            min: "1",
+                            value: item.number,
+                            onChange: function(event) { updateEmailItem(item.key, { number: event.target.value }); }
+                        })),
+
+                        isBuckType(item.deerType)
+                            ? field("Antler points", e("input", {
+                                type: "number",
+                                min: "0",
+                                value: item.antlerPoints,
+                                onChange: function(event) { updateEmailItem(item.key, { antlerPoints: event.target.value }); }
+                            }))
+                            : null,
+
+                        field("Direction of travel", e(
+                            "select",
+                            {
+                                value: item.direction,
+                                onChange: function(event) { updateEmailItem(item.key, { direction: event.target.value }); }
+                            },
+                            e("option", { value: "" }, "Not sure"),
+                            DIRECTIONS.map(function(d) {
+                                return e("option", { key: d.value, value: d.value }, d.arrow + " " + d.label);
+                            }),
+                            relativeDirectionOptions(camera)
+                        )),
+
+                        e(
+                            "div",
+                            { className: "form-buttons" },
+                            e("button", {
+                                className: "primary",
+                                disabled: !item.cameraId || !item.deerType,
+                                onClick: function() { addEmailSighting(item); }
+                            }, "Add sighting"),
+                            e("button", {
+                                className: "secondary",
+                                onClick: function() { skipEmailItem(item); }
+                            }, "Skip (no deer)")
+                        )
+                    )
+                )
+            );
+        }
+
+        return e(
+            "div",
+            { className: "dashboard" },
+
+            e(
+                "div",
+                { className: "dashboard-inner" },
+
+                e(
+                    "div",
+                    { className: "dashboard-title" },
+                    e("h2", null, "Import from Email"),
+                    e("p", null, "Pull trail camera photos from Gmail. The camera, date and time are filled in for you; you pick the deer type and number.")
+                ),
+
+                e(
+                    Collapsible,
+                    {
+                        id: "email-setup",
+                        title: "Email search",
+                        className: "dashboard-card",
+                        style: { marginBottom: "20px" }
+                    },
+
+                    field("Gmail search", e("input", {
+                        type: "text",
+                        value: gmailQuery,
+                        placeholder: "has:attachment newer_than:14d",
+                        onChange: function(event) {
+                            setGmailQuery(event.target.value);
+                            localStorage.setItem(GMAIL_QUERY_KEY, event.target.value);
+                        }
+                    })),
+
+                    e(
+                        "p",
+                        { className: "empty", style: { margin: "-4px 0 12px" } },
+                        "Narrow it to your camera's emails, for example from:alerts@your-camera.com or label:trail-cams (the same search box you use in Gmail)."
+                    ),
+
+                    e("button", {
+                        className: "primary",
+                        disabled: emailBusy,
+                        onClick: fetchEmails
+                    }, emailBusy ? "Working..." : "Fetch new photos"),
+
+                    emailStatus
+                        ? e("p", { style: { margin: "12px 0 0", fontSize: "13px" } }, emailStatus)
+                        : null,
+
+                    e(
+                        "p",
+                        { className: "empty", style: { margin: "12px 0 0", fontSize: "12px" } },
+                        "Read-only access to your email. Photos are only shown here as small copies and are not saved anywhere; only the sighting you add is kept."
+                    )
+                ),
+
+                emailItems.length
+                    ? emailItems.map(card)
+                    : e("div", { className: "empty" }, "No photos waiting. Tap Fetch new photos."),
+
+                // full screen photo viewer
+                emailPhoto
+                    ? e(
+                        "div",
+                        {
+                            className: "photo-overlay",
+                            onClick: function() { setEmailPhoto(null); }
+                        },
+                        e("img", { src: emailPhoto, alt: "Trail camera photo" })
+                    )
+                    : null
+            )
+        );
+    }
+
     // The Charts tab: a set of SVG charts drawn from the sighting data
     function chartsPage() {
 
@@ -6063,6 +6929,41 @@ function App() {
                     )
                     : null,
 
+                // Which way this camera points (shown on the map and used for "left to right" style directions)
+                e(
+                    "div",
+                    { className: "form-group", style: { marginTop: "10px" } },
+                    e("label", null, "Camera faces"),
+                    e(
+                        "select",
+                        {
+                            value: selectedCamera.facing || "",
+                            onChange: function(event) {
+                                updateCamera(selectedCamera.id, { facing: event.target.value });
+                            }
+                        },
+                        e("option", { value: "" }, "Not set"),
+                        DIRECTIONS.map(function(d) {
+                            return e("option", { key: d.value, value: d.value }, d.arrow + " " + d.label);
+                        })
+                    )
+                ),
+
+                // Text that appears in this camera's emails (its name or ID) so imported photos land on the right camera
+                e(
+                    "div",
+                    { className: "form-group" },
+                    e("label", null, "Email match text"),
+                    e("input", {
+                        type: "text",
+                        value: selectedCamera.emailMatch || "",
+                        placeholder: "name or ID used in this camera's emails",
+                        onChange: function(event) {
+                            updateCamera(selectedCamera.id, { emailMatch: event.target.value });
+                        }
+                    })
+                ),
+
                 movingCameraId === selectedCamera.id
                     ? e(
                         "div",
@@ -6369,7 +7270,10 @@ function App() {
                                         },
                                         d.arrow + " " + d.label
                                     );
-                                })
+                                }),
+
+                                // "Left to right" etc. (available once the camera's facing direction is set)
+                                relativeDirectionOptions(selectedCamera)
                             )
                         ),
 
@@ -6489,6 +7393,23 @@ function App() {
                                             ? "Yes"
                                             : "No")
                                     ),
+
+                                    // Link back to the original email (for sightings imported from email)
+                                    sighting.emailIds && sighting.emailIds.length
+                                        ? e(
+                                            "p",
+                                            null,
+                                            e(
+                                                "a",
+                                                {
+                                                    href: "https://mail.google.com/mail/u/0/#all/" + sighting.emailIds[0],
+                                                    target: "_blank",
+                                                    rel: "noopener"
+                                                },
+                                                "Open the email"
+                                            )
+                                        )
+                                        : null,
 
                                     sighting.notes
                                         ? e(
@@ -6699,6 +7620,21 @@ function App() {
                 "button",
                 {
                     className:
+                        view === "email"
+                            ? "active"
+                            : "",
+                    onClick:
+                        function() {
+                            setView("email");
+                        }
+                },
+                "Email"
+            ),
+
+            e(
+                "button",
+                {
+                    className:
                         view === "map"
                             ? "active"
                             : "",
@@ -6717,6 +7653,8 @@ function App() {
             )
             : view === "charts"
             ? chartsPage()
+            : view === "email"
+            ? emailPage()
             : e(
                 "div",
                 {
