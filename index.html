@@ -1718,7 +1718,7 @@ const DISMISSED_KEY = "deerDismissedEmails";    // emails you skipped (so they d
 let gmailAccessToken = null;
 
 function getGmailQuery() {
-    return localStorage.getItem(GMAIL_QUERY_KEY) || "has:attachment newer_than:14d";
+    return localStorage.getItem(GMAIL_QUERY_KEY) || "label:Deer";
 }
 
 function getDismissedEmails() {
