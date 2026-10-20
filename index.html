@@ -2923,9 +2923,9 @@ function sightingHour(sighting) {
 // A camera counts toward a stand when it is NEAR the stand, or when it sits on the SAME DEER TRAIL as the stand
 // (the trail passes close to both). Hot cameras (lots of recent, big, well-timed deer) make a stand score higher.
 const STAND_SCORE_CONFIG = {
-    nearRadius: 400,         // meters: a camera this close to a stand counts, fading out to nothing at this distance
-    trailSnap: 75,           // meters: a stand/camera within this distance of a trail line is "on" that trail
-    linkedMaxDist: 1500,     // meters: cameras on the same trail as the stand count up to this far away
+    nearRadius: 100,         // meters: a camera this close to a stand counts, fading out to nothing at this distance
+    trailSnap: 30,           // meters: a stand/camera within this distance of a trail line is "on" that trail
+    linkedMaxDist: 200,     // meters: cameras on the same trail as the stand count up to this far away
     linkedMinInfluence: 0.5, // a trail-linked camera at the far end still counts at least this fraction
     linkedBonus: 1.25        // trail-linked cameras get this extra multiplier (deer actually walk past both)
 };
