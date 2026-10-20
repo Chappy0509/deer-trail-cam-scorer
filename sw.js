@@ -72,7 +72,7 @@ self.addEventListener("fetch", function(event) {
     // if there's no signal, use the saved copy
     if (request.mode === "navigate") {
         event.respondWith(
-            fetch(request)
+            fetch(request, { cache: "reload" })  // skip the browser's own HTTP cache so updates show up
                 .then(function(response) {
                     // keep a fresh copy of the page for next time
                     const copy = response.clone();
