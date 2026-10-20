@@ -719,6 +719,103 @@ th {
         font-size: 22px;
     }
 }
+
+/* ---- PHONE VIEW (the 📱 button in the top bar adds class 'phone' to the page) ---- */
+/* Leave room at the bottom for the tab bar */
+body.phone {
+    padding-bottom: 56px;
+}
+
+/* Compact top bar; buttons wrap onto extra rows if needed */
+body.phone header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+}
+
+body.phone header h1 {
+    font-size: 18px;
+}
+
+body.phone .header-buttons {
+    flex-wrap: wrap;
+}
+
+/* Tabs become a bottom bar that is always in thumb reach */
+body.phone .nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2000;
+    box-shadow: 0 -2px 8px rgba(0,0,0,0.3);
+}
+
+body.phone .nav button {
+    flex: 1;
+    padding: 16px 6px;
+    font-size: 15px;
+}
+
+/* Big, easy to tap buttons and inputs (16px text stops iPhones zooming in on typing) */
+body.phone button {
+    min-height: 44px;
+    font-size: 15px;
+}
+
+body.phone input,
+body.phone select,
+body.phone textarea {
+    font-size: 16px;
+    min-height: 44px;
+}
+
+/* Map page: map on top, panel underneath; the whole page scrolls */
+body.phone .app {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+}
+
+body.phone #map {
+    order: -1;
+    flex: none;
+    width: 100%;
+    height: 58vh;
+    min-height: 300px;
+}
+
+body.phone .sidebar {
+    width: 100%;
+    height: auto;
+    overflow: visible;
+    border-right: none;
+    padding: 14px;
+}
+
+/* Dashboard and Charts: single column, wide tables scroll sideways */
+body.phone .dashboard {
+    padding: 12px;
+}
+
+body.phone .dashboard-grid {
+    grid-template-columns: 1fr;
+}
+
+body.phone .wide {
+    grid-column: auto;
+}
+
+body.phone .stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+body.phone table {
+    display: block;
+    overflow-x: auto;
+}
 </style>
 </head>
 
@@ -831,7 +928,7 @@ function directionText(value) {
 
 // ---- Camera scoring ----
 // A camera's score is the sum of its sightings' weights. Each sighting is worth:
-//   number of deer x deer type weight x shooting-hours multiplier x age decay
+//   number of deer x deer type weight x time-of-day multiplier x age decay
 // Change the numbers below to tune it.
 // Numbers that control the camera score. Edit these to tune how scoring works.
 const SCORE_CONFIG = {
@@ -843,112 +940,66 @@ const SCORE_CONFIG = {
         Fawn: 1,  // points per deer for a fawn
         Unknown: 1  // points per deer when the type is unknown
     },
-    shootingMultiplier: 2,      // sightings during shooting hours  // sightings during shooting hours are multiplied by this
-    otherMultiplier: 1,         // sightings outside shooting hours  // sightings outside shooting hours are multiplied by this
-    shootingBufferMinutes: 30   // shooting hours = sunrise - buffer to sunset + buffer  // shooting hours start this long before sunrise and end this long after sunset
+    primeWindows: [[5, 10], [14, 17]],  // prime hours: 5 AM up to 10 AM, and 2 PM up to 5 PM (24-hour clock)
+    primeWeight: 2,             // a sighting in a prime hour is worth this many times its base points (the maximum)
+    stepPerHour: 0.25,          // every hour away from a prime window takes this much off the multiplier
+    minWeight: 0.25             // the multiplier never drops below this
 };
 
-// Sunrise or sunset as a UTC timestamp (ms) for a calendar date and location.
-// Works out sunrise or sunset for a date and location using the standard 'Almanac for Computers' method.
-// Returns the moment as a UTC timestamp (milliseconds), or null if the sun never rises/sets that day.
-function sunEvent(year, month0, day, lat, lng, isRise) {
+// How many hours away an hour of the day is from the nearest prime window (0 = inside a window).
+function hoursFromPrime(hour) {
 
-    // Multiply degrees by this to get radians
-    const rad = Math.PI / 180;
+    let best = 99;
 
-    // Day number of the year (Jan 1 = 1)
-    const dayOfYear = Math.floor(
-        (Date.UTC(year, month0, day) - Date.UTC(year, 0, 0)) / 86400000
-    );
+    SCORE_CONFIG.primeWindows.forEach(function(w) {
+        // inside the window (start <= hour < end): distance 0
+        // before it: hours until it opens; after it: hours since it closed (the hour right after counts as 1)
+        const d = hour >= w[0] && hour < w[1] ? 0 : (hour < w[0] ? w[0] - hour : hour - w[1] + 1);
+        if (d < best) best = d;
+    });
 
-    // Longitude expressed in hours (the Earth turns 15 degrees per hour)
-    const lngHour = lng / 15;
-    // Approximate time of the event in days
-    const t = dayOfYear + ((isRise ? 6 : 18) - lngHour) / 24;
-    // The sun's mean anomaly (where it is in its orbit)
-    const M = 0.9856 * t - 3.289;
-
-    // The sun's true longitude in the sky
-    let L = M +
-        1.916 * Math.sin(M * rad) +
-        0.020 * Math.sin(2 * M * rad) +
-        282.634;
-
-    L = ((L % 360) + 360) % 360;
-
-    // Right ascension, then fixed to be in the same quadrant as L and converted to hours
-    let RA = Math.atan(0.91764 * Math.tan(L * rad)) / rad;
-    RA = ((RA % 360) + 360) % 360;
-    RA += Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90;
-    RA = RA / 15;
-
-    // The sun's declination (how far north/south of the equator it is)
-    const sinDec = 0.39782 * Math.sin(L * rad);
-    const cosDec = Math.cos(Math.asin(sinDec));
-
-    // Cosine of the sun's hour angle for sunrise/sunset (90.833 degrees accounts for atmosphere)
-    const cosH =
-        (Math.cos(90.833 * rad) - sinDec * Math.sin(lat * rad)) /
-        (cosDec * Math.cos(lat * rad));
-
-    // Sun never rises or never sets on this day at this latitude
-    if (cosH > 1 || cosH < -1) return null;
-
-    // Hour angle: use the morning side for sunrise, the evening side for sunset, then convert to hours
-    let H = isRise
-        ? 360 - Math.acos(cosH) / rad
-        : Math.acos(cosH) / rad;
-
-    H = H / 15;
-
-    // Local mean time of the event, kept between 0 and 24 hours
-    let T = H + RA - 0.06571 * t - 6.622;
-    T = ((T % 24) + 24) % 24;
-
-    // Convert local mean time to UTC and return it as a timestamp
-    return Date.UTC(year, month0, day) + (T - lngHour) * 3600000;
+    return best;
 }
 
-// True if a sighting happened during shooting hours (30 min before sunrise to 30 min after sunset)
-// at the camera's location on that date.
-function isShootingTime(sighting, camera) {
+// Time-of-day multiplier for an hour (0-23): highest in the prime windows, dropping hour by hour outside them.
+function hourWeight(hour) {
 
-    // Without a date and time we can't tell, so count it as outside shooting hours
-    if (!sighting.date || !sighting.time) return false;
+    const w = SCORE_CONFIG.primeWeight - SCORE_CONFIG.stepPerHour * hoursFromPrime(hour);
 
-    // Split '2026-09-28' and '06:45' into numbers
-    const dateParts = sighting.date.split("-").map(Number);
-    const timeParts = sighting.time.split(":").map(Number);
+    return Math.max(SCORE_CONFIG.minWeight, w);
+}
 
-    const y = dateParts[0];
-    const m = dateParts[1] - 1;
-    const d = dateParts[2];
-    const hh = timeParts[0];
-    const mm = timeParts[1] || 0;
+// The hour (0-23) of a sighting's time, or null if it has no usable time
+function hourOfSighting(sighting) {
 
-    // Bad date/time text: not shooting hours
-    if (![y, m, d, hh, mm].every(Number.isFinite)) return false;
+    if (!sighting.time) return null;
 
-    // The sighting moment (in this device's time zone)
-    const when = new Date(y, m, d, hh, mm).getTime();
+    const h = Number(String(sighting.time).split(":")[0]);
 
-    // Sunrise and sunset at the camera for that date
-    const rise = sunEvent(y, m, d, camera.lat, camera.lng, true);
-    const set = sunEvent(y, m, d, camera.lat, camera.lng, false);
+    return Number.isFinite(h) && h >= 0 && h <= 23 ? h : null;
+}
 
-    // No sunrise/sunset that day (extreme latitudes): fall back to 6 AM - 7 PM
-    if (rise === null || set === null) {
-        return hh >= 6 && hh < 19;
+// True if the sighting happened in a prime hour (5-10 AM or 2-5 PM)
+function isShootingTime(sighting) {
+
+    const h = hourOfSighting(sighting);
+
+    return h !== null && hoursFromPrime(h) === 0;
+}
+
+// Plain-English description of the prime hours, e.g. "5 AM - 10 AM and 2 PM - 5 PM"
+function primeWindowText() {
+
+    function clock(h) {
+        return (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? " AM" : " PM");
     }
 
-    // The 30 minute buffer, in milliseconds
-    const buffer = SCORE_CONFIG.shootingBufferMinutes * 60000;
-
-    // Inside the window if after (sunrise - buffer) and before (sunset + buffer)
-    return when >= rise - buffer && when <= set + buffer;
+    return SCORE_CONFIG.primeWindows.map(function(w) {
+        return clock(w[0]) + " - " + clock(w[1]);
+    }).join(" and ");
 }
 
-// Score for ONE sighting = number of deer x type points x shooting-hours multiplier x age decay
+// Score for ONE sighting = number of deer x type points x time-of-day multiplier x age decay
 function sightingScore(sighting, camera, now) {
 
     // Points per deer for this type (unknown types count as 1)
@@ -958,9 +1009,9 @@ function sightingScore(sighting, camera, now) {
             : 1;
 
     // Bonus multiplier if it happened during shooting hours
-    const timeWeight = isShootingTime(sighting, camera)
-        ? SCORE_CONFIG.shootingMultiplier
-        : SCORE_CONFIG.otherMultiplier;
+    // (no time entered: treat it as an average hour, a multiplier of 1)
+    const hr = hourOfSighting(sighting);
+    const timeWeight = hr === null ? 1 : hourWeight(hr);
 
     // How many days ago the sighting was (0 if there is no date)
     let ageDays = 0;
@@ -2466,27 +2517,6 @@ function groupEmails(items) {
 
 // ---- Shooting-hours check and weekly power rankings ----
 
-// Readable shooting window for a camera on a date, e.g. "6:18 AM - 7:11 PM" (in this device's time zone)
-function shootingWindowText(camera, dateString) {
-
-    const p = dateString.split("-").map(Number);
-
-    const rise = sunEvent(p[0], p[1] - 1, p[2], camera.lat, camera.lng, true);
-    const set = sunEvent(p[0], p[1] - 1, p[2], camera.lat, camera.lng, false);
-
-    if (rise === null || set === null) {
-        return "the sun doesn't rise/set that day here";
-    }
-
-    const buffer = SCORE_CONFIG.shootingBufferMinutes * 60000;
-
-    function clock(timestamp) {
-        return new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    }
-
-    return clock(rise - buffer) + " - " + clock(set + buffer);
-}
-
 // When a sighting happened as a timestamp (noon if it has no time); null if it has no date
 function sightingTime(sighting) {
 
@@ -2764,7 +2794,7 @@ function powerRankingsView(cameras, weeks, weekKey, onPick) {
         e(
             "p",
             { className: "empty", style: { marginBottom: "18px" } },
-            "Score as of the end of the week. Each sighting is weighted by deer type and shooting hours, and fades with a " +
+            "Score as of the end of the week. Each sighting is weighted by deer type and time of day (best " + primeWindowText() + "), and fades with a " +
             SCORE_CONFIG.halfLifeDays + "-day half-life, so recent activity moves a camera up the rankings."
         ),
 
@@ -2886,6 +2916,331 @@ function sightingHour(sighting) {
     return Number.isFinite(hour) && hour >= 0 && hour < 24
         ? hour
         : null;
+}
+
+// ---- Stand scoring ----
+// Each stand gets a score for every hour of the day, built from the cameras around it.
+// A camera counts toward a stand when it is NEAR the stand, or when it sits on the SAME DEER TRAIL as the stand
+// (the trail passes close to both). Hot cameras (lots of recent, big, well-timed deer) make a stand score higher.
+const STAND_SCORE_CONFIG = {
+    nearRadius: 400,         // meters: a camera this close to a stand counts, fading out to nothing at this distance
+    trailSnap: 75,           // meters: a stand/camera within this distance of a trail line is "on" that trail
+    linkedMaxDist: 1500,     // meters: cameras on the same trail as the stand count up to this far away
+    linkedMinInfluence: 0.5, // a trail-linked camera at the far end still counts at least this fraction
+    linkedBonus: 1.25        // trail-linked cameras get this extra multiplier (deer actually walk past both)
+};
+
+// Straight-line distance in meters between two lat/lng points (haversine formula)
+function metersBetween(lat1, lng1, lat2, lng2) {
+
+    const rad = Math.PI / 180;
+    const dLat = (lat2 - lat1) * rad;
+    const dLng = (lng2 - lng1) * rad;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+
+    return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Shortest distance in meters from a point to a trail line (a list of [lat, lng] points)
+function metersToTrail(lat, lng, points) {
+
+    if (!points || !points.length) return Infinity;
+
+    // Flatten to meters around the point (good enough for short distances)
+    const mPerDegLat = 111320;
+    const mPerDegLng = 111320 * Math.cos(lat * Math.PI / 180);
+
+    function toXY(p) {
+        return [(p[1] - lng) * mPerDegLng, (p[0] - lat) * mPerDegLat];
+    }
+
+    let best = Infinity;
+
+    for (let i = 0; i < points.length; i++) {
+
+        const a = toXY(points[i]);
+        const b = i + 1 < points.length ? toXY(points[i + 1]) : a;
+
+        // Closest spot on segment a-b to the origin (0,0), which is our point
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const len2 = dx * dx + dy * dy;
+        let t = len2 ? -(a[0] * dx + a[1] * dy) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+
+        const d = Math.hypot(a[0] + t * dx, a[1] + t * dy);
+
+        if (d < best) best = d;
+    }
+
+    return best;
+}
+
+// Which trails (by position in the list) a spot is on
+function trailsAt(lat, lng, trails) {
+
+    const found = [];
+
+    (trails || []).forEach(function(trail, i) {
+        if (metersToTrail(lat, lng, trail.points) <= STAND_SCORE_CONFIG.trailSnap) found.push(i);
+    });
+
+    return found;
+}
+
+// Hour-by-hour points a camera has earned (already includes the time-of-day weighting and age decay).
+// Sightings with no time can't be placed in an hour, so they are left out.
+function cameraHourPoints(camera, now) {
+
+    const hours = [];
+    for (let h = 0; h < 24; h++) hours.push(0);
+
+    (camera.sightings || []).forEach(function(sighting) {
+
+        const h = hourOfSighting(sighting);
+
+        if (h !== null) hours[h] += sightingScore(sighting, camera, now);
+    });
+
+    return hours;
+}
+
+// The full score for one stand:
+// { hours: [24 numbers], total, best: [top 3 hours], cams: [{ camera, hours, total, influence, linked, dist }] }
+function standScore(stand, cameras, trails, now) {
+
+    const cfg = STAND_SCORE_CONFIG;
+    const standTrails = trailsAt(stand.lat, stand.lng, trails);
+    const hours = [];
+    for (let h = 0; h < 24; h++) hours.push(0);
+
+    const cams = [];
+
+    cameras.forEach(function(camera) {
+
+        if (!Number.isFinite(camera.lat) || !Number.isFinite(camera.lng)) return;
+
+        const dist = metersBetween(stand.lat, stand.lng, camera.lat, camera.lng);
+
+        // Closeness: 1 right at the stand, fading to 0 at nearRadius
+        const near = dist < cfg.nearRadius ? 1 - dist / cfg.nearRadius : 0;
+
+        // Trail link: the camera and the stand are both on at least one shared trail
+        const camTrails = trailsAt(camera.lat, camera.lng, trails);
+        const linked = camTrails.some(function(i) { return standTrails.indexOf(i) !== -1; });
+
+        // Along-trail influence: never below linkedMinInfluence while within linkedMaxDist
+        const trailInf = linked && dist <= cfg.linkedMaxDist
+            ? cfg.linkedMinInfluence + (1 - cfg.linkedMinInfluence) * (1 - dist / cfg.linkedMaxDist)
+            : 0;
+
+        let influence = Math.max(near, trailInf);
+
+        if (influence <= 0) return;
+
+        if (linked) influence *= cfg.linkedBonus;
+
+        const camHours = cameraHourPoints(camera, now);
+        const contribution = camHours.map(function(v) { return v * influence; });
+        const total = contribution.reduce(function(a, b) { return a + b; }, 0);
+
+        contribution.forEach(function(v, h) { hours[h] += v; });
+
+        cams.push({ camera: camera, hours: contribution, total: total, influence: influence, linked: linked, dist: dist });
+    });
+
+    cams.sort(function(a, b) { return b.total - a.total; });
+
+    const order = hours.map(function(v, h) { return h; }).sort(function(a, b) { return hours[b] - hours[a]; });
+    const grand = hours.reduce(function(a, b) { return a + b; }, 0);
+
+    return {
+        hours: hours,
+        total: grand,
+        best: grand > 0 ? order.slice(0, 3).filter(function(h) { return hours[h] > 0; }) : [],
+        cams: cams
+    };
+}
+
+// Scores for every stand, best first
+function allStandScores(stands, cameras, trails) {
+
+    const now = Date.now();
+
+    return stands.map(function(stand) {
+        return { stand: stand, score: standScore(stand, cameras, trails, now) };
+    });
+}
+
+// Rounds a score for display
+function fmtScore(v) {
+    return (Math.round(v * 10) / 10).toFixed(1);
+}
+
+// Charts card: stands ranked for the chosen hour (or the whole day), with a stand x hour heat grid
+function standRankingsView(stands, cameras, trails, hourChoice, onPickHour, onOpenStand) {
+
+    if (!stands.length) {
+        return e("p", { className: "empty" }, "Add a stand on the Map tab to see stand scores.");
+    }
+
+    const scored = allStandScores(stands, cameras, trails);
+    const pick = hourChoice === "all" ? null : Number(hourChoice);
+
+    function value(row) {
+        return pick === null ? row.score.total : row.score.hours[pick];
+    }
+
+    const ranked = scored.slice().sort(function(a, b) { return value(b) - value(a); });
+    const top = Math.max.apply(null, ranked.map(value).concat([0.0001]));
+
+    // Highest cell in the grid, for the colour scale
+    let gridMax = 0.0001;
+    scored.forEach(function(row) { row.score.hours.forEach(function(v) { if (v > gridMax) gridMax = v; }); });
+
+    return e(
+        "div",
+        null,
+
+        e(
+            "div",
+            { className: "form-group" },
+            e("label", null, "Rank stands for"),
+            e(
+                "select",
+                { value: hourChoice, onChange: function(ev) { onPickHour(ev.target.value); } },
+                e("option", { value: "all" }, "The whole day (total)"),
+                Array.from({ length: 24 }, function(_, h) {
+                    return e("option", { key: h, value: String(h) }, hourLabel(h) + " hour");
+                })
+            )
+        ),
+
+        // Ranked bars
+        ranked.map(function(row, i) {
+
+            const v = value(row);
+
+            return e(
+                "div",
+                { key: row.stand.id, style: { marginBottom: "10px", cursor: "pointer" }, onClick: function() { onOpenStand(row.stand); } },
+                e(
+                    "div",
+                    { style: { display: "flex", justifyContent: "space-between", fontSize: "14px" } },
+                    e("span", null, (i + 1) + ". " + row.stand.name + " (" + row.stand.type + ")"),
+                    e("strong", null, fmtScore(v))
+                ),
+                e(
+                    "div",
+                    { style: { background: "#e8efe9", borderRadius: "4px", height: "10px" } },
+                    e("div", { style: { width: Math.max(2, 100 * v / top) + "%", height: "10px", borderRadius: "4px", background: "#b26a00" } })
+                ),
+                e(
+                    "div",
+                    { style: { fontSize: "12px", color: "#666" } },
+                    row.score.cams.length
+                        ? "Hottest camera: " + row.score.cams[0].camera.name +
+                          (row.score.best.length ? " · best hours: " + row.score.best.map(hourLabel).join(", ") : "")
+                        : "No cameras near this stand or on its trail"
+                )
+            );
+        }),
+
+        // Stand x hour grid
+        e("div", { style: { fontWeight: 600, margin: "14px 0 6px" } }, "Hour-by-hour score"),
+        e(
+            "div",
+            { style: { overflowX: "auto" } },
+            e(
+                "table",
+                { style: { borderCollapse: "collapse", fontSize: "11px" } },
+                e(
+                    "thead",
+                    null,
+                    e(
+                        "tr",
+                        null,
+                        e("th", { style: { textAlign: "left", paddingRight: "8px" } }, "Stand"),
+                        Array.from({ length: 24 }, function(_, h) {
+                            return e("th", { key: h, style: { padding: "2px 3px", fontWeight: 400 } }, hourShort(h));
+                        })
+                    )
+                ),
+                e(
+                    "tbody",
+                    null,
+                    scored.map(function(row) {
+                        return e(
+                            "tr",
+                            { key: row.stand.id },
+                            e("td", { style: { paddingRight: "8px", whiteSpace: "nowrap" } }, row.stand.name),
+                            row.score.hours.map(function(v, h) {
+                                const a = Math.min(1, v / gridMax);
+                                return e(
+                                    "td",
+                                    {
+                                        key: h,
+                                        title: row.stand.name + " at " + hourLabel(h) + ": " + fmtScore(v),
+                                        style: {
+                                            background: "rgba(178,106,0," + (0.08 + 0.92 * a).toFixed(2) + ")",
+                                            color: a > 0.55 ? "#fff" : "#333",
+                                            textAlign: "center",
+                                            minWidth: "22px",
+                                            height: "22px",
+                                            border: "1px solid #fff"
+                                        }
+                                    },
+                                    v >= 0.5 ? Math.round(v) : ""
+                                );
+                            })
+                        );
+                    })
+                )
+            )
+        ),
+
+        e(
+            "p",
+            { className: "empty", style: { marginTop: "10px", marginBottom: 0 } },
+            "A stand's score adds up the cameras within " + STAND_SCORE_CONFIG.nearRadius + " m of it, plus cameras on the same deer trail " +
+            "(up to " + STAND_SCORE_CONFIG.linkedMaxDist + " m away, with a x" + STAND_SCORE_CONFIG.linkedBonus + " bonus). Closer cameras count more. " +
+            "Each camera's points use deer type, age (" + SCORE_CONFIG.halfLifeDays + "-day half-life) and the hour of day. Sightings with no time are not counted here."
+        )
+    );
+}
+
+// Score card shown in a stand's sidebar panel
+function standScoreCard(score) {
+
+    const items = score.hours.map(function(v, h) {
+        return { label: hourShort(h), value: Math.round(v * 10) / 10, title: hourLabel(h) + ": " + fmtScore(v) };
+    });
+
+    return e(
+        "div",
+        { className: "card" },
+        e("h3", null, "Stand score: " + fmtScore(score.total)),
+        score.best.length
+            ? e("p", null, "Best hours: " + score.best.map(hourLabel).join(", "))
+            : e("p", { className: "empty" }, "No scored cameras near this stand or on its trail yet."),
+        columnChart(items, "#b26a00", 3),
+        score.cams.length
+            ? e(
+                "div",
+                { style: { marginTop: "8px" } },
+                e("div", { style: { fontWeight: 600, marginBottom: "4px" } }, "Hottest cameras for this stand"),
+                score.cams.slice(0, 5).map(function(c) {
+                    return e(
+                        "div",
+                        { key: c.camera.id, style: { fontSize: "13px", display: "flex", justifyContent: "space-between" } },
+                        e("span", null, c.camera.name + " · " + Math.round(c.dist) + " m" + (c.linked ? " · same trail" : "")),
+                        e("strong", null, fmtScore(c.total))
+                    );
+                })
+            )
+            : null
+    );
 }
 
 // Compass bearing in degrees for each direction (0 = north, 90 = east...)
@@ -3299,6 +3654,15 @@ function App() {
     const [heatFilter, setHeatFilter] = useState("All");  // which deer the heat map counts (All, Buck, Big Buck, Doe, Fawn)
     const [heatRadius, setHeatRadius] = useState(90);  // how wide each heat blotch is (bigger = blotches join up sooner)
     const [chartCamera, setChartCamera] = useState("all");  // Charts page camera filter ('all' or a camera id)
+    const [phoneMode, setPhoneMode] = useState(function() {  // phone-friendly layout on? (saved; defaults on for narrow screens)
+        try {
+            const saved = localStorage.getItem("deerPhoneMode");
+            if (saved === "1") return true;
+            if (saved === "0") return false;
+        } catch (error) {}
+        return window.innerWidth <= 700;
+    });
+    const [standHour, setStandHour] = useState("all");  // hour picked in Stand Rankings ('all' = whole day)
     const [powerWeek, setPowerWeek] = useState("latest");  // week picked in Weekly Power Rankings ('latest' = this week)
     const [emailItems, setEmailItems] = useState([]);  // photo emails waiting to be turned into sightings
     const [emailBusy, setEmailBusy] = useState(false);  // true while fetching emails
@@ -3991,6 +4355,20 @@ function App() {
             drawSavedTrail(trail);
         });
 
+        // OPEN WHERE THE CAMERAS ARE: zoom the map to show every camera.
+        // One camera -> centre on it; no cameras -> keep the default view.
+        const camSpots = cameras.filter(function(camera) {
+            return Number.isFinite(camera.lat) && Number.isFinite(camera.lng);
+        }).map(function(camera) {
+            return [camera.lat, camera.lng];
+        });
+
+        if (camSpots.length === 1) {
+            map.setView(camSpots[0], 16);
+        } else if (camSpots.length > 1) {
+            map.fitBounds(camSpots, { padding: [40, 40], maxZoom: 18 });
+        }
+
         // MAP CLICK: what tapping the map does, in priority order:
         //   1. a camera/stand is waiting to be moved -> put it here
         //   2. a stand is being added                -> create the stand here
@@ -4454,8 +4832,12 @@ function App() {
 
             marker.unbindTooltip();
 
+            // Tooltip also shows the stand's current score and best hour
+            const sc = standScore(stand, cameras, trails, Date.now());
+
             marker.bindTooltip(
-                stand.name + " (" + stand.type + ")",
+                stand.name + " (" + stand.type + ")" +
+                (sc.total > 0 ? " · score " + fmtScore(sc.total) + (sc.best.length ? " · best " + hourLabel(sc.best[0]) : "") : ""),
                 {
                     direction: "top",
                     offset: [0, -14]
@@ -4474,7 +4856,26 @@ function App() {
             }
         });
 
-    }, [stands, mapVersion, showStands]);
+    }, [stands, cameras, trails, mapVersion, showStands]);
+
+    // PHONE MODE: save the choice, switch the 'phone' style on the page, and let the map resize to its new box
+    useEffect(function() {
+
+        try {
+            localStorage.setItem("deerPhoneMode", phoneMode ? "1" : "0");
+        } catch (error) {}
+
+        document.body.classList.toggle("phone", phoneMode);
+
+        const timer = setTimeout(function() {
+            if (mapRef.current) {
+                try { mapRef.current.invalidateSize(); } catch (error) {}
+            }
+        }, 150);
+
+        return function() { clearTimeout(timer); };
+
+    }, [phoneMode]);
 
     // Save the trails/stands on-off choice and show or hide the trail lines
     useEffect(function() {
@@ -4976,7 +5377,7 @@ function App() {
                 ...sighting,
                 cameraName: camera.name,
                 cameraId: camera.id,
-                inShootingHours: isShootingTime(sighting, camera)
+                inShootingHours: isShootingTime(sighting)
             });
 
         });
@@ -5754,7 +6155,7 @@ function App() {
                                     marginBottom: "16px"
                                 }
                             },
-                            "Big bucks count most, then bucks, does and fawns. Sightings during shooting hours count double, and every sighting loses half its weight every " +
+                            "Big bucks count most, then bucks, does and fawns. Sightings count most during " + primeWindowText() + " and a little less every hour outside those times, and every sighting loses half its weight every " +
                             SCORE_CONFIG.halfLifeDays +
                             " days."
                         ),
@@ -5848,7 +6249,7 @@ function App() {
                                             e(
                                                 "th",
                                                 null,
-                                                "Shooting hours"
+                                                "Prime hours"
                                             ),
 
                                             e(
@@ -6746,7 +7147,7 @@ function App() {
             const camera = cameraLookup[sighting.cameraId];
             const n = Number(sighting.number || 0);
 
-            if (camera && isShootingTime(sighting, camera)) {
+            if (camera && isShootingTime(sighting)) {
                 shootingCount += n;
             } else {
                 otherCount += n;
@@ -6818,6 +7219,17 @@ function App() {
                         true
                     ),
 
+                    // Chart: Stand scores (stands ranked by the cameras around them, hour by hour)
+                    chartCard(
+                        "stands",
+                        "Stand scores",
+                        standRankingsView(stands, cameras, trails, standHour, setStandHour, function(stand) {
+                            setView("map");
+                            setTimeout(function() { openStand(stand); }, 300);
+                        }),
+                        true
+                    ),
+
                     chartCard("daily", "Deer seen per day (last 30 days)", dailyChart(sightings), true),
 
                     // Chart: Deer type mix
@@ -6832,24 +7244,18 @@ function App() {
                             null,
                             donutChart(
                                 [
-                                    { label: "Shooting hours", color: "#1f4d2b", value: shootingCount },
+                                    { label: "Prime hours", color: "#1f4d2b", value: shootingCount },
                                     { label: "Other hours", color: "#9e9e9e", value: otherCount }
                                 ],
                                 "deer",
                                 true
                             ),
-                            // Worked example so you can check the window against your own sunrise/sunset times
-                            allSightings.length && cameraLookup[allSightings[0].cameraId]
-                                ? e(
-                                    "p",
-                                    { className: "empty", style: { marginTop: "12px", marginBottom: 0 } },
-                                    "Shooting hours = 30 min before sunrise to 30 min after sunset at each camera. Example: on " +
-                                    allSightings[0].date + " at " + allSightings[0].cameraName + " they were " +
-                                    shootingWindowText(cameraLookup[allSightings[0].cameraId], allSightings[0].date) +
-                                    ". Your device time zone: " +
-                                    (Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown") + "."
-                                )
-                                : null
+                            e(
+                                "p",
+                                { className: "empty", style: { marginTop: "12px", marginBottom: 0 } },
+                                "Prime hours are " + primeWindowText() + " (the time typed on each sighting). Points are highest then and drop " +
+                                SCORE_CONFIG.stepPerHour + " per hour outside, down to a minimum of " + SCORE_CONFIG.minWeight + "."
+                            )
                         ),
                         false
                     ),
@@ -6988,7 +7394,7 @@ function App() {
 
                         e("h3", null, stand.name),
 
-                        e("p", null, stand.type),
+                        e("p", null, stand.type + " · score " + fmtScore(standScore(stand, cameras, trails, Date.now()).total)),
 
                         e(
                             "div",
@@ -7118,6 +7524,9 @@ function App() {
                     "Delete Stand"
                 )
             ),
+
+            // Hour-by-hour score for this stand, from nearby and trail-linked cameras
+            standScoreCard(standScore(selectedStand, cameras, trails, Date.now())),
 
             mapOptions()
         );
@@ -7875,8 +8284,8 @@ function App() {
                                     e(
                                         "p",
                                         null,
-                                        "Shooting hours: " +
-                                        (isShootingTime(sighting, selectedCamera)
+                                        "Prime hours: " +
+                                        (isShootingTime(sighting)
                                             ? "Yes"
                                             : "No")
                                     ),
@@ -7957,6 +8366,17 @@ function App() {
                     className:
                         "header-buttons"
                 },
+
+                // Switch between the normal layout and the phone-friendly layout
+                e(
+                    "button",
+                    {
+                        className: "header-button",
+                        title: "Switch between the phone-friendly and full layouts",
+                        onClick: function() { setPhoneMode(!phoneMode); }
+                    },
+                    phoneMode ? "🖥 Full view" : "📱 Phone view"
+                ),
 
                 e(
                     "button",
