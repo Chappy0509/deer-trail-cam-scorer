@@ -8361,7 +8361,8 @@ function App() {
             e(
                 "h1",
                 null,
-                "Deer Trail Cam Scorer"
+                "Deer Trail Cam Scorer",
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v9")
             ),
 
             e(
@@ -8602,7 +8603,18 @@ root.render(
 
 if ("serviceWorker" in navigator) {
     window.addEventListener("load", function() {
-        navigator.serviceWorker.register("sw.js").catch(function() {});
+        // updateViaCache:'none' makes the phone re-check sw.js every time instead of trusting an old copy
+        navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(function(reg) {
+            reg.update();
+        }).catch(function() {});
+
+        // When a newer version takes over, reload once so the new page is what you see
+        let reloaded = false;
+        navigator.serviceWorker.addEventListener("controllerchange", function() {
+            if (reloaded) return;
+            reloaded = true;
+            window.location.reload();
+        });
     });
 }
 
