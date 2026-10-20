@@ -816,6 +816,31 @@ body.phone .stats {
     gap: 10px;
 }
 
+body.phone .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+body.phone .dashboard-card {
+    min-width: 0;
+    max-width: 100%;
+    padding: 12px;
+    overflow-x: auto;
+}
+
+body.phone .dashboard-card h3 {
+    font-size: 16px;
+    margin-bottom: 12px;
+}
+
+body.phone .stat-value {
+    font-size: 20px;
+}
+
+body.phone .nav button {
+    padding: 16px 2px;
+    font-size: 13px;
+}
+
 body.phone table {
     display: block;
     overflow-x: auto;
@@ -1198,7 +1223,7 @@ function legendRow(items) {
 function columnChart(items, color, labelEvery) {
 
     // Chart size and margins: W/H = total, L/R/T/B = left/right/top/bottom space
-    const W = 640, H = 220, L = 36, R = 8, T = 10, B = 26;
+    const W = chartWidth(), H = 220, L = 36, R = 8, T = 10, B = 26;
     const plotW = W - L - R;
     const plotH = H - T - B;
 
@@ -1253,7 +1278,7 @@ function columnChart(items, color, labelEvery) {
 function lineChart(points, color) {
 
     // Chart size and margins
-    const W = 640, H = 220, L = 36, R = 12, T = 10, B = 26;
+    const W = chartWidth(), H = 220, L = 36, R = 12, T = 10, B = 26;
     const plotW = W - L - R;
     const plotH = H - T - B;
 
@@ -1503,7 +1528,7 @@ function cameraTypeChart(sightings, cameras) {
     if (!rows.length) return chartNote("No sightings yet.");
 
     // Chart width, space for camera names, and row height
-    const W = 640, labelW = 130, rowH = 28;
+    const W = chartWidth(), labelW = 130, rowH = 28;
     const max = Math.max.apply(null, rows.map(function(r) { return r.total; }));
     // Longest possible bar (leaves room for the number at the end)
     const barMax = W - labelW - 50;
@@ -1575,7 +1600,7 @@ function weeklyTypeChart(sightings) {
     });
 
     // Chart size and margins
-    const W = 640, H = 220, L = 36, R = 8, T = 10, B = 26;
+    const W = chartWidth(), H = 220, L = 36, R = 8, T = 10, B = 26;
     const plotW = W - L - R;
     const plotH = H - T - B;
     const max = niceMax(Math.max.apply(null, totals.concat([1])));
@@ -2651,7 +2676,7 @@ function rankTrendChart(cameras, weeks, index) {
     const maxRank = Math.min(cameras.length, 10);
     const palette = ["#1f4d2b", "#c0392b", "#2980b9", "#f39c12", "#8e44ad", "#16a085"];
 
-    const W = 640, H = 240, L = 34, R = 14, T = 14, B = 28;
+    const W = chartWidth(), H = 240, L = 34, R = 14, T = 14, B = 28;
     const plotW = W - L - R;
     const plotH = H - T - B;
     const stepX = plotW / (shownWeeks.length - 1);
@@ -2931,8 +2956,50 @@ const STAND_SCORE_CONFIG = {
     trailSnap: 30,           // meters: a stand/camera within this distance of a trail line is "on" that trail
     linkedMaxDist: 200,     // meters: cameras on the same trail as the stand count up to this far away
     linkedMinInfluence: 0.5, // a trail-linked camera at the far end still counts at least this fraction
-    linkedBonus: 1.25        // trail-linked cameras get this extra multiplier (deer actually walk past both)
+    linkedBonus: 1.25,       // trail-linked cameras get this extra multiplier (deer actually walk past both)
+    directionEffect: 0.5     // 0 = ignore direction. 0.5 = a deer walking straight toward the stand counts 1.5x, straight away 0.5x
 };
+
+// ---- Saved scoring settings (edited on the Settings tab, kept on this device) ----
+const SCORING_KEY = "deerScoringSettings";
+
+// Copy of the built-in defaults, so 'Reset' can put them back
+const DEFAULT_SCORING = JSON.parse(JSON.stringify({ score: SCORE_CONFIG, stand: STAND_SCORE_CONFIG }));
+
+// Writes the current settings to this device
+function saveScoringSettings() {
+    try {
+        localStorage.setItem(SCORING_KEY, JSON.stringify({ score: SCORE_CONFIG, stand: STAND_SCORE_CONFIG }));
+    } catch (error) {}
+}
+
+// Puts a settings object into the live config objects (ignoring anything that isn't a number)
+function applyScoringSettings(saved) {
+
+    if (!saved) return;
+
+    function copyNumbers(from, to) {
+        Object.keys(to).forEach(function(key) {
+            if (typeof to[key] === "number" && Number.isFinite(from && from[key])) to[key] = from[key];
+        });
+    }
+
+    copyNumbers(saved.score, SCORE_CONFIG);
+    copyNumbers(saved.stand, STAND_SCORE_CONFIG);
+
+    if (saved.score && saved.score.typeWeights) copyNumbers(saved.score.typeWeights, SCORE_CONFIG.typeWeights);
+
+    if (saved.score && Array.isArray(saved.score.primeWindows)) {
+        saved.score.primeWindows.slice(0, 2).forEach(function(w, i) {
+            if (Array.isArray(w) && Number.isFinite(w[0]) && Number.isFinite(w[1])) SCORE_CONFIG.primeWindows[i] = [w[0], w[1]];
+        });
+    }
+}
+
+// Load whatever was saved last time
+try {
+    applyScoringSettings(JSON.parse(localStorage.getItem(SCORING_KEY)));
+} catch (error) {}
 
 // Straight-line distance in meters between two lat/lng points (haversine formula)
 function metersBetween(lat1, lng1, lat2, lng2) {
@@ -2995,7 +3062,31 @@ function trailsAt(lat, lng, trails) {
 
 // Hour-by-hour points a camera has earned (already includes the time-of-day weighting and age decay).
 // Sightings with no time can't be placed in an hour, so they are left out.
-function cameraHourPoints(camera, now) {
+// How much a sighting counts toward a stand, based on the way the deer was walking.
+// Heading toward the stand = 1 + directionEffect, heading away = 1 - directionEffect, sideways = 1.
+function directionFactor(sighting, camera, stand) {
+
+    const effect = STAND_SCORE_CONFIG.directionEffect;
+    const heading = DIRECTION_BEARINGS[sighting.direction];
+
+    if (!effect || heading === undefined || !stand) return 1;
+
+    // Right on top of the stand: no meaningful "toward"
+    if (metersBetween(camera.lat, camera.lng, stand.lat, stand.lng) < 10) return 1;
+
+    // Compass bearing from the camera to the stand
+    const rad = Math.PI / 180;
+    const dLng = (stand.lng - camera.lng) * rad;
+    const y = Math.sin(dLng) * Math.cos(stand.lat * rad);
+    const x = Math.cos(camera.lat * rad) * Math.sin(stand.lat * rad) -
+        Math.sin(camera.lat * rad) * Math.cos(stand.lat * rad) * Math.cos(dLng);
+    const toStand = (Math.atan2(y, x) / rad + 360) % 360;
+
+    // cos(angle between the deer's heading and the direction to the stand): 1 = straight toward, -1 = straight away
+    return Math.max(0, 1 + effect * Math.cos((heading - toStand) * rad));
+}
+
+function cameraHourPoints(camera, now, stand) {
 
     const hours = [];
     for (let h = 0; h < 24; h++) hours.push(0);
@@ -3004,7 +3095,7 @@ function cameraHourPoints(camera, now) {
 
         const h = hourOfSighting(sighting);
 
-        if (h !== null) hours[h] += sightingScore(sighting, camera, now);
+        if (h !== null) hours[h] += sightingScore(sighting, camera, now) * directionFactor(sighting, camera, stand);
     });
 
     return hours;
@@ -3045,7 +3136,7 @@ function standScore(stand, cameras, trails, now) {
 
         if (linked) influence *= cfg.linkedBonus;
 
-        const camHours = cameraHourPoints(camera, now);
+        const camHours = cameraHourPoints(camera, now, stand);
         const contribution = camHours.map(function(v) { return v * influence; });
         const total = contribution.reduce(function(a, b) { return a + b; }, 0);
 
@@ -3075,6 +3166,12 @@ function allStandScores(stands, cameras, trails) {
     return stands.map(function(stand) {
         return { stand: stand, score: standScore(stand, cameras, trails, now) };
     });
+}
+
+// Charts are drawn narrower on the phone layout so their text stays readable
+let PHONE_CHARTS = false;
+function chartWidth() {
+    return PHONE_CHARTS ? 380 : 640;
 }
 
 // Rounds a score for display
@@ -3209,7 +3306,7 @@ function standRankingsView(stands, cameras, trails, hourChoice, onPickHour, onOp
             { className: "empty", style: { marginTop: "10px", marginBottom: 0 } },
             "A stand's score adds up the cameras within " + STAND_SCORE_CONFIG.nearRadius + " m of it, plus cameras on the same deer trail " +
             "(up to " + STAND_SCORE_CONFIG.linkedMaxDist + " m away, with a x" + STAND_SCORE_CONFIG.linkedBonus + " bonus). Closer cameras count more. " +
-            "Each camera's points use deer type, age (" + SCORE_CONFIG.halfLifeDays + "-day half-life) and the hour of day. Sightings with no time are not counted here."
+            "Each camera's points use deer type, age (" + SCORE_CONFIG.halfLifeDays + "-day half-life), the hour of day, and which way the deer were walking (toward the stand counts more). Sightings with no time are not counted here."
         )
     );
 }
@@ -3656,7 +3753,7 @@ function App() {
     const [colors, setColors] = useState(getColors);  // camera / outline / trail / stand colors
     const [heatOn, setHeatOn] = useState(false);  // heat map switched on?
     const [heatFilter, setHeatFilter] = useState("All");  // which deer the heat map counts (All, Buck, Big Buck, Doe, Fawn)
-    const [heatRadius, setHeatRadius] = useState(90);  // how wide each heat blotch is (bigger = blotches join up sooner)
+    const [heatRadius, setHeatRadius] = useState(65);  // how wide each heat blotch is (bigger = blotches join up sooner)
     const [chartCamera, setChartCamera] = useState("all");  // Charts page camera filter ('all' or a camera id)
     const [phoneMode, setPhoneMode] = useState(function() {  // phone-friendly layout on? (saved; defaults on for narrow screens)
         try {
@@ -3666,6 +3763,10 @@ function App() {
         } catch (error) {}
         return window.innerWidth <= 700;
     });
+    PHONE_CHARTS = phoneMode;  // tell the chart drawing code whether to draw narrow charts for the phone layout
+    const [settingsReset, setSettingsReset] = useState(0);  // goes up on Reset so the number boxes reload their values
+    const [settingsVersion, setSettingsVersion] = useState(0);  // goes up when a scoring setting changes so scores redraw
+    const [trailHeatOn, setTrailHeatOn] = useState(false);  // colour the trails by how hot the cameras near them are?
     const [standHour, setStandHour] = useState("all");  // hour picked in Stand Rankings ('all' = whole day)
     const [powerWeek, setPowerWeek] = useState("latest");  // week picked in Weekly Power Rankings ('latest' = this week)
     const [emailItems, setEmailItems] = useState([]);  // photo emails waiting to be turned into sightings
@@ -3712,6 +3813,7 @@ function App() {
     const showTrailsRef = useRef(true);  // copy of showTrails for drawing trails
     const showStandsRef = useRef(true);  // copy of showStands
     const heatLayerRef = useRef(null);  // the heat map layer
+    const trailHeatRef = useRef(null);  // the coloured 'trail heat' segments
     const arrowMarkersRef = useRef({});  // camera id -> its direction arrow
     const facingLayersRef = useRef({});  // camera id -> the wedge showing which way it points
     const colorsRef = useRef(colors);  // copy of the colors for code that runs outside a redraw
@@ -4306,6 +4408,7 @@ function App() {
             trailLayersRef.current = [];
             currentTrailLayerRef.current = null;
             heatLayerRef.current = null;
+            trailHeatRef.current = null;
             arrowMarkersRef.current = {};
             standMarkersRef.current = {};
             facingLayersRef.current = {};
@@ -4680,6 +4783,98 @@ function App() {
 
     }, [heatOn, heatFilter, heatRadius, cameras, mapVersion, timelapseOn, timelapseHour]);
 
+    // TRAIL HEAT: with the heat map on, colour each stretch of trail by how hot the cameras near it are
+    // (blue = cool, yellow = warm, red = hot). Follows the same deer filter and timelapse hour as the heat map.
+    useEffect(function() {
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        if (trailHeatRef.current) {
+            map.removeLayer(trailHeatRef.current);
+            trailHeatRef.current = null;
+        }
+
+        if (!heatOn || !trailHeatOn || !showTrails) return;
+
+        // Deer counted at each camera (same rule as the heat map)
+        const hot = cameras.map(function(camera) {
+            return {
+                lat: camera.lat,
+                lng: camera.lng,
+                count: camera.sightings
+                    .filter(function(sighting) {
+                        return matchesHeatFilter(sighting.deerType, heatFilter) &&
+                            (!timelapseOn || sightingHour(sighting) === timelapseHour);
+                    })
+                    .reduce(function(total, sighting) { return total + Number(sighting.number || 0); }, 0)
+            };
+        }).filter(function(c) { return c.count > 0; });
+
+        if (!hot.length) return;
+
+        // A camera warms the trail within this many meters of it (fading out with distance)
+        const reach = Math.max(heatRadius * 2, 60);
+        const pieces = [];
+        let top = 0.0001;
+
+        trails.forEach(function(trail) {
+
+            const pts = trail.points || [];
+
+            for (let i = 0; i + 1 < pts.length; i++) {
+
+                const a = pts[i];
+                const b = pts[i + 1];
+                const len = metersBetween(a[0], a[1], b[0], b[1]);
+
+                // Cut long segments into ~15 m pieces so the colour changes smoothly along the trail
+                const n = Math.max(1, Math.min(60, Math.round(len / 15)));
+
+                for (let k = 0; k < n; k++) {
+
+                    const p1 = [a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n];
+                    const p2 = [a[0] + (b[0] - a[0]) * (k + 1) / n, a[1] + (b[1] - a[1]) * (k + 1) / n];
+                    const mid = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+
+                    let heat = 0;
+
+                    hot.forEach(function(c) {
+                        const d = metersBetween(mid[0], mid[1], c.lat, c.lng);
+                        if (d < reach) heat += c.count * (1 - d / reach);
+                    });
+
+                    if (heat > top) top = heat;
+
+                    pieces.push({ p1: p1, p2: p2, heat: heat });
+                }
+            }
+        });
+
+        // blue -> yellow -> red
+        function heatColor(t) {
+            const hue = Math.round(220 - 220 * t * 1);  // 220 (blue) down to 0 (red), passing yellow
+            return "hsl(" + Math.max(0, hue) + ", 90%, 50%)";
+        }
+
+        const group = L.layerGroup();
+
+        pieces.forEach(function(piece) {
+            if (piece.heat <= 0) return;
+            L.polyline([piece.p1, piece.p2], {
+                color: heatColor(Math.min(1, piece.heat / top)),
+                weight: 7,
+                opacity: 0.95,
+                lineCap: "butt",
+                interactive: false
+            }).addTo(group);
+        });
+
+        trailHeatRef.current = group.addTo(map);
+
+    }, [heatOn, trailHeatOn, showTrails, heatFilter, heatRadius, cameras, trails, mapVersion, timelapseOn, timelapseHour]);
+
     // TIMELAPSE: while playing, move to the next hour every 0.9 seconds (23 -> 0 wraps around)
     useEffect(function() {
 
@@ -4860,7 +5055,7 @@ function App() {
             }
         });
 
-    }, [stands, cameras, trails, mapVersion, showStands]);
+    }, [stands, cameras, trails, mapVersion, showStands, settingsVersion]);
 
     // PHONE MODE: save the choice, switch the 'phone' style on the page, and let the map resize to its new box
     useEffect(function() {
@@ -6487,6 +6682,25 @@ function App() {
                 ? e(
                     "div",
                     { style: { marginBottom: "12px" } },
+                    e(
+                        "button",
+                        {
+                            className: trailHeatOn ? "primary" : "secondary",
+                            style: { width: "100%" },
+                            onClick: function() { setTrailHeatOn(!trailHeatOn); }
+                        },
+                        trailHeatOn ? "Trail heat: On" : "Trail heat: Off"
+                    ),
+                    trailHeatOn && !showTrails
+                        ? e("p", { className: "empty", style: { margin: "6px 0 0" } }, "Turn Trails on in the layer toggles to see trail heat.")
+                        : null
+                )
+                : null,
+
+            heatOn
+                ? e(
+                    "div",
+                    { style: { marginBottom: "12px" } },
 
                     e(
                         "button",
@@ -7110,6 +7324,129 @@ function App() {
     }
 
     // The Charts tab: a set of SVG charts drawn from the sighting data
+    // ---- SETTINGS TAB: change how scores are worked out. Saved on this device. ----
+    function settingsPage() {
+
+        // Change one number in a config object, save it, and redraw everything that uses scores
+        function setNum(target, key, raw) {
+            const v = Number(raw);
+            if (raw === "" || !Number.isFinite(v)) return;
+            target[key] = v;
+            saveScoringSettings();
+            setSettingsVersion(function(n) { return n + 1; });
+        }
+
+        // One labelled number box (uncontrolled so you can clear it while typing)
+        function field(label, target, key, hint, step, indexKey) {
+            return e(
+                "div",
+                { className: "form-group", key: label },
+                e("label", null, label),
+                e("input", {
+                    type: "number",
+                    step: step || 1,
+                    key: label + settingsReset,
+                    defaultValue: target[key],
+                    onChange: function(ev) { setNum(target, key, ev.target.value); }
+                }),
+                hint ? e("div", { className: "empty", style: { margin: "2px 0 0", fontSize: "12px" } }, hint) : null
+            );
+        }
+
+        const sc = SCORE_CONFIG;
+        const st = STAND_SCORE_CONFIG;
+
+        function windowFields(i, name) {
+            const w = sc.primeWindows[i];
+            function setWin(j, raw) {
+                const v = Number(raw);
+                if (raw === "" || !Number.isFinite(v)) return;
+                w[j] = v;
+                saveScoringSettings();
+                setSettingsVersion(function(n) { return n + 1; });
+            }
+            return e(
+                "div",
+                { className: "form-group", key: "w" + i },
+                e("label", null, name + " (hours, 24-hour clock)"),
+                e(
+                    "div",
+                    { style: { display: "flex", gap: "8px", alignItems: "center" } },
+                    e("input", { type: "number", min: 0, max: 24, key: "ws" + i + settingsReset, defaultValue: w[0], onChange: function(ev) { setWin(0, ev.target.value); } }),
+                    e("span", null, "to"),
+                    e("input", { type: "number", min: 0, max: 24, key: "we" + i + settingsReset, defaultValue: w[1], onChange: function(ev) { setWin(1, ev.target.value); } })
+                )
+            );
+        }
+
+        return e(
+            "div",
+            { className: "dashboard" },
+            e(
+                "div",
+                { className: "dashboard-inner" },
+                e("div", { className: "dashboard-title" }, e("h2", null, "Scoring Settings"),
+                    e("p", { className: "empty" }, "Changes apply immediately to camera scores, power rankings and stand scores. They are saved on this device only.")),
+
+                e(
+                    "div",
+                    { className: "dashboard-grid" },
+
+                    e(
+                        "div",
+                        { className: "dashboard-card" },
+                        e("h3", null, "Points per deer"),
+                        ["Big Buck", "Buck", "Doe", "Fawn", "Unknown"].map(function(type) {
+                            return field(type, sc.typeWeights, type, null, 0.5);
+                        }),
+                        field("Half-life (days)", sc, "halfLifeDays", "A sighting counts half as much after this many days.", 1)
+                    ),
+
+                    e(
+                        "div",
+                        { className: "dashboard-card" },
+                        e("h3", null, "Time of day"),
+                        windowFields(0, "Prime window 1"),
+                        windowFields(1, "Prime window 2"),
+                        field("Prime multiplier", sc, "primeWeight", "Points multiplier inside the prime windows (the maximum).", 0.25),
+                        field("Drop per hour away", sc, "stepPerHour", "Taken off the multiplier for each hour outside the windows.", 0.05),
+                        field("Minimum multiplier", sc, "minWeight", "It never drops below this.", 0.05),
+                        e("p", { className: "empty", style: { marginBottom: 0 } }, "Right now: " + primeWindowText() + ".")
+                    ),
+
+                    e(
+                        "div",
+                        { className: "dashboard-card wide" },
+                        e("h3", null, "Stand scoring"),
+                        field("Camera radius (m)", st, "nearRadius", "Cameras this close to a stand count, fading to nothing at this distance.", 10),
+                        field("Trail snap (m)", st, "trailSnap", "A stand or camera this close to a trail line counts as being on that trail.", 5),
+                        field("Same-trail reach (m)", st, "linkedMaxDist", "Cameras on the same trail as a stand count up to this far away.", 10),
+                        field("Same-trail minimum influence", st, "linkedMinInfluence", "0 to 1: how much a same-trail camera at the far edge still counts.", 0.05),
+                        field("Same-trail bonus", st, "linkedBonus", "Extra multiplier for cameras on the same trail as the stand.", 0.05),
+                        field("Direction effect", st, "directionEffect", "0 ignores direction. 0.5 means deer walking toward the stand count 1.5x and away 0.5x. Needs 'Direction of travel' on sightings.", 0.05)
+                    )
+                ),
+
+                e(
+                    "button",
+                    {
+                        className: "secondary",
+                        style: { marginTop: "16px" },
+                        onClick: function() {
+                            if (!confirm("Put every scoring setting back to the built-in defaults?")) return;
+                            applyScoringSettings(JSON.parse(JSON.stringify(DEFAULT_SCORING)));
+                            DEFAULT_SCORING.score.primeWindows.forEach(function(w, i) { SCORE_CONFIG.primeWindows[i] = w.slice(); });
+                            saveScoringSettings();
+                            setSettingsReset(function(n) { return n + 1; });
+                            setSettingsVersion(function(n) { return n + 1; });
+                        }
+                    },
+                    "Reset to defaults"
+                )
+            )
+        );
+    }
+
     function chartsPage() {
 
         // optional filter so every chart can be limited to one camera
@@ -8362,7 +8699,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v9")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v10")
             ),
 
             e(
@@ -8556,6 +8893,15 @@ function App() {
                         }
                 },
                 "Map"
+            ),
+
+            e(
+                "button",
+                {
+                    className: view === "settings" ? "active" : "",
+                    onClick: function() { setView("settings"); }
+                },
+                "Settings"
             )
         ),
 
@@ -8567,6 +8913,8 @@ function App() {
             ? chartsPage()
             : view === "email"
             ? emailPage()
+            : view === "settings"
+            ? settingsPage()
             : e(
                 "div",
                 {
