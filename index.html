@@ -277,6 +277,7 @@ h3 {
 
 /* Yellow hint box ('Click points on the map...') */
 .drawing {
+    color: #4a3b00;
     background: #fff3cd;
     border: 1px solid #ffe69c;
     padding: 10px;
@@ -857,11 +858,24 @@ body.phone table {
     overflow-x: auto;
 }
 
-/* Charts always keep a white backing so their labels stay readable on dark themes */
-.chart-svg {
-    background: #ffffff;
-    border-radius: 6px;
+/* Charts follow the app colours. Charts are drawn with fixed colours, so these rules re-colour them by matching those fixed values. */
+.chart-svg [fill="#666"], .chart-svg [fill="#777"], .chart-svg [fill="#444"], .chart-svg [fill="#555"] { fill: var(--muted); }
+.chart-svg text[fill="#444"] { fill: var(--text); }
+.chart-svg [stroke="#e3e3e3"], .chart-svg [stroke="#ddd"] { stroke: var(--line); }
+.chart-svg [fill="#1f4d2b"] { fill: var(--brand); }
+.chart-svg [stroke="#1f4d2b"] { stroke: var(--brand); }
+.chart-svg [fill="#ffffff"], .chart-svg [fill="white"] { fill: var(--card); }
+.chart-svg [stroke="#ffffff"], .chart-svg [stroke="white"], .chart-svg [stroke="#fff"] { stroke: var(--card); }
+
+/* Form boxes follow the app colours */
+.form-group input, .form-group select, .form-group textarea, .chart-filter select {
+    background: var(--card);
+    color: var(--text);
+    border-color: var(--line);
 }
+th { color: var(--muted); }
+.legend { color: var(--text); }
+.hour-chart { border-bottom-color: var(--line); }
 </style>
 </head>
 
@@ -3362,7 +3376,7 @@ function standRankingsView(stands, cameras, trails, hourChoice, onPickHour, onOp
                 ),
                 e(
                     "div",
-                    { style: { background: "#e8efe9", borderRadius: "4px", height: "10px" } },
+                    { style: { background: "var(--line)", borderRadius: "4px", height: "10px" } },
                     e("div", { style: { width: Math.max(2, 100 * v / top) + "%", height: "10px", borderRadius: "4px", background: "#b26a00" } })
                 ),
                 e(
@@ -7315,12 +7329,12 @@ function App() {
                         "div",
                         { className: "email-fields" },
 
-                        e("p", { style: { margin: "0 0 4px", fontSize: "13px", color: "#555" } }, item.subject || "(no subject)"),
+                        e("p", { style: { margin: "0 0 4px", fontSize: "13px", color: "var(--muted)" } }, item.subject || "(no subject)"),
 
                         // the camera name read from the black bar on the photo
                         e(
                             "p",
-                            { style: { margin: "0 0 10px", fontSize: "12px", color: "#777" } },
+                            { style: { margin: "0 0 10px", fontSize: "12px", color: "var(--muted)" } },
                             item.stripName
                                 ? "Camera name on the photo: " + item.stripName
                                 : "Camera name on the photo: not read"
@@ -7352,7 +7366,7 @@ function App() {
 
                         e(
                             "p",
-                            { style: { margin: "-6px 0 12px", fontSize: "12px", color: "#777" } },
+                            { style: { margin: "-6px 0 12px", fontSize: "12px", color: "var(--muted)" } },
                             "Time taken from " + item.timeSource +
                             (item.timeSource.indexOf("photo") !== -1 ? "." : ". Check it against the time stamped on the photo.") +
                             (item.photoIds.length > 1 ? " (" + item.photoIds.length + " photos in a row grouped together.)" : "")
@@ -8993,7 +9007,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v13")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v14")
             ),
 
             e(
