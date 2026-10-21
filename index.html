@@ -992,7 +992,7 @@ function directionText(value) {
 // Change the numbers below to tune it.
 // Numbers that control the camera score. Edit these to tune how scoring works.
 const SCORE_CONFIG = {
-    halfLifeDays: 7,            // a sighting counts half as much after this many days  // a sighting counts half as much after this many days
+    halfLifeDays: 5,            // a sighting counts half as much after this many days  // a sighting counts half as much after this many days
     typeWeights: {
         "Big Buck": 8,  // points per deer for a big buck
         Buck: 4,  // points per deer for a regular buck
@@ -1002,7 +1002,7 @@ const SCORE_CONFIG = {
     },
     primeWindows: [[5, 10], [14, 17]],  // prime hours: 5 AM up to 10 AM, and 2 PM up to 5 PM (24-hour clock)
     primeWeight: 2,             // a sighting in a prime hour is worth this many times its base points (the maximum)
-    stepPerHour: 0.25,          // every hour away from a prime window takes this much off the multiplier
+    stepPerHour: 0.35,          // every hour away from a prime window takes this much off the multiplier
     minWeight: 0.25             // the multiplier never drops below this
 };
 
@@ -2716,7 +2716,7 @@ function powerRanking(cameras, week) {
     return rows;
 }
 
-// Lines showing how the top cameras' ranks moved over the last 8 weeks (rank 1 at the top)
+// Lines showing how every camera's rank moved over the last 8 weeks (rank 1 at the top)
 function rankTrendChart(cameras, weeks, index) {
 
     const shownWeeks = weeks.slice(Math.max(0, index - 7), index + 1);
@@ -2735,15 +2735,16 @@ function rankTrendChart(cameras, weeks, index) {
 
     const finalRows = powerRanking(cameras, shownWeeks[shownWeeks.length - 1]);
 
-    // follow the six best cameras this week
-    const followed = finalRows.filter(function(row) { return row.score > 0; }).slice(0, 6);
+    // follow every camera (or stand) that has a score this week
+    const followed = finalRows.filter(function(row) { return row.score > 0; });
 
     if (!followed.length) return chartNote("No scores yet.");
 
-    const maxRank = Math.min(cameras.length, 10);
-    const palette = ["#1f4d2b", "#c0392b", "#2980b9", "#f39c12", "#8e44ad", "#16a085"];
+    const maxRank = cameras.length;
+    const palette = ["#1f4d2b", "#c0392b", "#2980b9", "#f39c12", "#8e44ad", "#16a085", "#d35400", "#2c3e50", "#e84393", "#7f8c8d", "#6ab04c", "#0abde3"];
 
-    const W = chartWidth(), H = 240, L = 34, R = 14, T = 14, B = 28;
+    // taller when there are many cameras so every rank line has room
+    const W = chartWidth(), H = Math.max(240, 22 * maxRank + 42), L = 34, R = 14, T = 14, B = 28;
     const plotW = W - L - R;
     const plotH = H - T - B;
     const stepX = plotW / (shownWeeks.length - 1);
@@ -3026,7 +3027,7 @@ const STAND_SCORE_CONFIG = {
     nearRadius: 100,         // (no longer used) meters: a camera this close to a stand counts, fading out to nothing at this distance
     trailSnap: 30,           // (no longer used) meters: a stand/camera within this distance of a trail line is "on" that trail
     linkedMaxDist: 200,     // meters: a connected camera fades from full strength at the stand to the minimum at this distance
-    linkedMinInfluence: 0.5, // a trail-linked camera at the far end still counts at least this fraction
+    linkedMinInfluence: 0.25, // a trail-linked camera at the far end still counts at least this fraction
     linkedBonus: 1.25,       // (no longer used) trail-linked cameras get this extra multiplier (deer actually walk past both)
     directionEffect: 0.5     // 0 = ignore direction. 0.5 = a deer walking straight toward the stand counts 1.5x, straight away 0.5x
 };
@@ -3075,6 +3076,7 @@ applyTheme(getTheme());
 
 // ---- Saved scoring settings (edited on the Settings tab, kept on this device) ----
 const SCORING_KEY = "deerScoringSettings";
+const SCORING_DEFAULTS_VERSION = 2;  // goes up when the built-in defaults change, so old saved settings don't hide the new defaults
 
 // Copy of the built-in defaults, so 'Reset' can put them back
 const DEFAULT_SCORING = JSON.parse(JSON.stringify({ score: SCORE_CONFIG, stand: STAND_SCORE_CONFIG }));
@@ -3082,7 +3084,7 @@ const DEFAULT_SCORING = JSON.parse(JSON.stringify({ score: SCORE_CONFIG, stand: 
 // Writes the current settings to this device
 function saveScoringSettings() {
     try {
-        localStorage.setItem(SCORING_KEY, JSON.stringify({ score: SCORE_CONFIG, stand: STAND_SCORE_CONFIG }));
+        localStorage.setItem(SCORING_KEY, JSON.stringify({ v: SCORING_DEFAULTS_VERSION, score: SCORE_CONFIG, stand: STAND_SCORE_CONFIG }));
     } catch (error) {}
 }
 
@@ -3111,7 +3113,8 @@ function applyScoringSettings(saved) {
 
 // Load whatever was saved last time
 try {
-    applyScoringSettings(JSON.parse(localStorage.getItem(SCORING_KEY)));
+    const savedScoring = JSON.parse(localStorage.getItem(SCORING_KEY));
+    if (savedScoring && savedScoring.v === SCORING_DEFAULTS_VERSION) applyScoringSettings(savedScoring);
 } catch (error) {}
 
 // How strongly one camera counts toward one stand (0 = not at all). Returns null if it isn't connected.
@@ -9007,7 +9010,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v14")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v16")
             ),
 
             e(
