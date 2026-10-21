@@ -28,6 +28,17 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 
 <style>
+/* Theme colours (changed on the Settings tab) */
+:root {
+    --brand: #1f4d2b;
+    --brand-dark: #163a20;
+    --page: #f4f4f4;
+    --card: #ffffff;
+    --text: #222222;
+    --muted: #666666;
+    --line: #dddddd;
+}
+
 /* ===== Styles for the whole app. Each rule has a short note saying what it controls. ===== */
 /* Make padding and borders count inside an element's width so sizes are predictable */
 * {
@@ -38,8 +49,8 @@
 body {
     margin: 0;
     font-family: Arial, sans-serif;
-    background: #f4f4f4;
-    color: #222;
+    background: var(--page);
+    color: var(--text);
 }
 
 /* Base look shared by every button (colors are added by the classes below) */
@@ -60,7 +71,7 @@ textarea {
 
 /* Green top bar holding the title and the Drive / Export / Import buttons */
 header {
-    background: #1f4d2b;
+    background: var(--brand);
     color: white;
     padding: 15px 22px;
     display: flex;
@@ -84,12 +95,12 @@ header h1 {
 /* White button style used inside the green top bar */
 .header-button {
     background: white;
-    color: #1f4d2b;
+    color: var(--brand);
 }
 
 /* Dark green tab bar (Dashboard / Charts / Map) */
 .nav {
-    background: #163a20;
+    background: var(--brand-dark);
     display: flex;
 }
 
@@ -104,7 +115,7 @@ header h1 {
 /* The tab you are currently on is shown white */
 .nav button.active {
     background: white;
-    color: #1f4d2b;
+    color: var(--brand);
 }
 
 /* Map page layout: sidebar on the left, map on the right */
@@ -116,10 +127,10 @@ header h1 {
 /* The scrolling left panel on the Map page */
 .sidebar {
     width: 360px;
-    background: white;
+    background: var(--card);
     padding: 18px;
     overflow-y: auto;
-    border-right: 1px solid #ddd;
+    border-right: 1px solid var(--line);
 }
 
 /* The map itself fills the rest of the space */
@@ -141,8 +152,8 @@ h3 {
 
 /* White rounded box used for items in the sidebar */
 .card {
-    background: white;
-    border: 1px solid #ddd;
+    background: var(--card);
+    border: 1px solid var(--line);
     border-radius: 8px;
     padding: 13px;
     margin-bottom: 10px;
@@ -162,7 +173,7 @@ h3 {
 
 /* Green action button */
 .primary {
-    background: #1f4d2b;
+    background: var(--brand);
     color: white;
 }
 
@@ -174,8 +185,8 @@ h3 {
 
 /* Grey neutral button */
 .secondary {
-    background: #ddd;
-    color: #222;
+    background: var(--line);
+    color: var(--text);
 }
 
 /* Brown '+ Add Deer Trail' button */
@@ -189,7 +200,7 @@ h3 {
 /* Green 'Finish Trail' button */
 .finish-button {
     width: 100%;
-    background: #1f4d2b;
+    background: var(--brand);
     color: white;
     margin-bottom: 8px;
 }
@@ -197,7 +208,7 @@ h3 {
 /* Dark grey 'Cancel' button */
 .cancel-button {
     width: 100%;
-    background: #777;
+    background: var(--muted);
     color: white;
 }
 
@@ -244,7 +255,7 @@ h3 {
 
 /* One sighting in a camera's list, separated by a line */
 .sighting {
-    border-top: 1px solid #ddd;
+    border-top: 1px solid var(--line);
     padding-top: 10px;
     margin-top: 10px;
 }
@@ -261,7 +272,7 @@ h3 {
 
 /* Sighting date/time in grey */
 .sighting small {
-    color: #666;
+    color: var(--muted);
 }
 
 /* Yellow hint box ('Click points on the map...') */
@@ -300,7 +311,7 @@ h3 {
 /* Grey subtitle under the page title */
 .dashboard-title p {
     margin: 0;
-    color: #666;
+    color: var(--muted);
 }
 
 /* Grid of the small number boxes at the top of the dashboard */
@@ -313,21 +324,21 @@ h3 {
 
 /* One number box (label, big value, detail) */
 .stat {
-    background: white;
-    border: 1px solid #ddd;
+    background: var(--card);
+    border: 1px solid var(--line);
     border-radius: 10px;
     padding: 18px;
 }
 
 /* Small grey label in a number box */
 .stat-label {
-    color: #666;
+    color: var(--muted);
     font-size: 13px;
 }
 
 /* Big green number in a number box */
 .stat-value {
-    color: #1f4d2b;
+    color: var(--brand);
     font-size: 28px;
     font-weight: bold;
     margin-top: 8px;
@@ -335,7 +346,7 @@ h3 {
 
 /* Tiny grey text under the big number */
 .stat-detail {
-    color: #777;
+    color: var(--muted);
     font-size: 12px;
     margin-top: 5px;
 }
@@ -349,8 +360,8 @@ h3 {
 
 /* White rounded card on the dashboard and charts pages */
 .dashboard-card {
-    background: white;
-    border: 1px solid #ddd;
+    background: var(--card);
+    border: 1px solid var(--line);
     border-radius: 10px;
     padding: 18px;
 }
@@ -380,7 +391,7 @@ h3 {
 
 /* Grey track behind a bar */
 .bar-background {
-    background: #e5e5e5;
+    background: var(--line);
     height: 12px;
     border-radius: 10px;
     overflow: hidden;
@@ -389,12 +400,12 @@ h3 {
 /* The green filled part of a bar */
 .bar {
     height: 100%;
-    background: #1f4d2b;
+    background: var(--brand);
 }
 
 /* One entry in the Recent Sightings list */
 .recent-item {
-    border: 1px solid #ddd;
+    border: 1px solid var(--line);
     border-radius: 7px;
     padding: 11px;
     margin-bottom: 9px;
@@ -409,7 +420,7 @@ h3 {
 /* Entry date/time in grey */
 .recent-item span {
     font-size: 13px;
-    color: #666;
+    color: var(--muted);
 }
 
 /* Lets the big sightings table scroll sideways on small screens */
@@ -428,7 +439,7 @@ th,
 td {
     padding: 9px;
     text-align: left;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid var(--line);
     font-size: 13px;
 }
 
@@ -439,7 +450,7 @@ th {
 
 /* Grey 'nothing here yet' message */
 .empty {
-    color: #777;
+    color: var(--muted);
     font-size: 14px;
 }
 
@@ -481,7 +492,7 @@ th {
 
 /* The little ▾ / ▸ arrow on the right of a collapsible title */
 .collapse-arrow {
-    color: #666;
+    color: var(--muted);
     font-size: 16px;
     padding-left: 10px;
 }
@@ -586,7 +597,7 @@ th {
     display: flex;
     align-items: flex-end;
     height: 150px;
-    background: #f3f3f3;
+    background: var(--page);
     border-bottom: 1px solid #bbb;
 }
 
@@ -601,7 +612,7 @@ th {
 /* The bar inside an hour slot */
 .hour-bar {
     width: 100%;
-    background: #1f4d2b;
+    background: var(--brand);
 }
 
 /* Weekly power rankings: green up-arrow when a camera moved up */
@@ -636,7 +647,7 @@ th {
 .hour-label {
     flex: 1;
     font-size: 10px;
-    color: #666;
+    color: var(--muted);
     white-space: nowrap;
 }
 
@@ -695,7 +706,7 @@ th {
         width: 100%;
         height: 370px;
         border-right: none;
-        border-bottom: 1px solid #ddd;
+        border-bottom: 1px solid var(--line);
     }
 
     /* The map itself fills the rest of the space */
@@ -844,6 +855,12 @@ body.phone .nav button {
 body.phone table {
     display: block;
     overflow-x: auto;
+}
+
+/* Charts always keep a white backing so their labels stay readable on dark themes */
+.chart-svg {
+    background: #ffffff;
+    border-radius: 6px;
 }
 </style>
 </head>
@@ -2622,6 +2639,39 @@ function powerWeeks(cameras, nowMs) {
     return weeks.slice(-26);
 }
 
+// Stands as pretend cameras, so the weekly power rankings can rank them with the same code.
+// Each stand's "sightings" are the timed sightings of its connected cameras, with the deer count scaled by how strongly
+// the camera counts for the stand (distance fade x direction), so the weekly score matches the stand score.
+function standPseudoCameras(stands, cameras) {
+
+    return stands.map(function(stand) {
+
+        const sightings = [];
+
+        cameras.forEach(function(camera) {
+
+            const inf = standInfluence(stand, camera);
+
+            if (!inf) return;
+
+            camera.sightings.forEach(function(sighting) {
+
+                if (hourOfSighting(sighting) === null || sightingTime(sighting) === null) return;
+
+                const raw = Number(sighting.number || 1);
+
+                sightings.push({
+                    ...sighting,
+                    number: raw * inf.influence * directionFactor(sighting, camera, stand),
+                    rawNumber: raw
+                });
+            });
+        });
+
+        return { id: stand.id, name: stand.name, sightings: sightings };
+    });
+}
+
 // Cameras ranked by their score at the end of a week (highest first)
 function powerRanking(cameras, week) {
 
@@ -2634,6 +2684,9 @@ function powerRanking(cameras, week) {
             deer: sumNumber(camera.sightings.filter(function(sighting) {
                 const t = sightingTime(sighting);
                 return t !== null && t >= week.start.getTime() && t <= week.asOf;
+            }).map(function(sighting) {
+                // stand rankings carry the real deer count in rawNumber
+                return sighting.rawNumber !== undefined ? { ...sighting, number: sighting.rawNumber } : sighting;
             }))
         };
     });
@@ -2728,10 +2781,12 @@ function rankTrendChart(cameras, weeks, index) {
 }
 
 // The whole Weekly Power Rankings card: week picker, ranking table, and the rank trend chart
-function powerRankingsView(cameras, weeks, weekKey, onPick) {
+function powerRankingsView(cameras, weeks, weekKey, onPick, noun) {
 
-    if (!cameras.length) return chartNote("Add cameras and sightings to see power rankings.");
-    if (!weeks.length) return chartNote("No sightings with dates yet.");
+    noun = noun || "Camera";
+
+    if (!cameras.length) return chartNote(noun === "Camera" ? "Add cameras and sightings to see power rankings." : "Add stands on the Map tab to see stand power rankings.");
+    if (!weeks.length) return chartNote(noun === "Camera" ? "No sightings with dates yet." : "No dated sightings from cameras connected to your stands yet. Connect cameras in each stand's panel.");
 
     // the chosen week (defaults to the latest)
     let index = weeks.findIndex(function(week) { return week.key === weekKey; });
@@ -2801,7 +2856,7 @@ function powerRankingsView(cameras, weeks, weekKey, onPick) {
                     "tr",
                     null,
                     e("th", null, "Rank"),
-                    e("th", null, "Camera"),
+                    e("th", null, noun),
                     e("th", null, "Score"),
                     e("th", null, "Move"),
                     e("th", null, "Deer this week")
@@ -2823,8 +2878,8 @@ function powerRankingsView(cameras, weeks, weekKey, onPick) {
         e(
             "p",
             { className: "empty", style: { marginBottom: "18px" } },
-            "Score as of the end of the week. Each sighting is weighted by deer type and time of day (best " + primeWindowText() + "), and fades with a " +
-            SCORE_CONFIG.halfLifeDays + "-day half-life, so recent activity moves a camera up the rankings."
+            (noun === "Camera" ? "" : "Stand scores use only connected cameras, faded by distance and direction. ") + "Score as of the end of the week. Each sighting is weighted by deer type and time of day (best " + primeWindowText() + "), and fades with a " +
+            SCORE_CONFIG.halfLifeDays + "-day half-life, so recent activity moves a " + noun.toLowerCase() + " up the rankings."
         ),
 
         rankTrendChart(cameras, weeks, index)
@@ -2961,6 +3016,48 @@ const STAND_SCORE_CONFIG = {
     linkedBonus: 1.25,       // (no longer used) trail-linked cameras get this extra multiplier (deer actually walk past both)
     directionEffect: 0.5     // 0 = ignore direction. 0.5 = a deer walking straight toward the stand counts 1.5x, straight away 0.5x
 };
+
+// ---- App colour theme (edited on the Settings tab, saved on this device) ----
+const THEME_KEY = "deerTheme";
+
+// Ready-made colour sets. brand = top bar / buttons / big numbers, brandDark = tab bar,
+// page = background, card = cards and side panel, text = main text, muted = grey text, line = borders
+const THEME_PRESETS = {
+    "Forest green": { brand: "#1f4d2b", brandDark: "#163a20", page: "#f4f4f4", card: "#ffffff", text: "#222222", muted: "#666666", line: "#dddddd" },
+    "Blaze orange": { brand: "#c2570c", brandDark: "#8f3f07", page: "#f6f1ea", card: "#ffffff", text: "#2a2118", muted: "#6b5d4d", line: "#e0d4c4" },
+    "Lake blue":    { brand: "#1f4e79", brandDark: "#143653", page: "#eef2f6", card: "#ffffff", text: "#1c2733", muted: "#5b6b7b", line: "#d3dbe3" },
+    "Camo brown":   { brand: "#5a4a2f", brandDark: "#3d321f", page: "#efece4", card: "#fbfaf6", text: "#2b2618", muted: "#6e664f", line: "#d9d3c1" },
+    "Night":        { brand: "#2e7d4f", brandDark: "#0f1a14", page: "#121815", card: "#1d2621", text: "#e8efe9", muted: "#9db0a3", line: "#34423a" }
+};
+
+// Loads the saved theme (or the default green one)
+function getTheme() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(THEME_KEY));
+        if (saved && typeof saved === "object") return { ...THEME_PRESETS["Forest green"], ...saved };
+    } catch (error) {}
+    return { ...THEME_PRESETS["Forest green"] };
+}
+
+// Puts a theme onto the page by setting the CSS variables (and the phone's address-bar colour)
+function applyTheme(theme) {
+
+    const root = document.documentElement.style;
+
+    root.setProperty("--brand", theme.brand);
+    root.setProperty("--brand-dark", theme.brandDark);
+    root.setProperty("--page", theme.page);
+    root.setProperty("--card", theme.card);
+    root.setProperty("--text", theme.text);
+    root.setProperty("--muted", theme.muted);
+    root.setProperty("--line", theme.line);
+
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", theme.brand);
+}
+
+// Apply right away so there is no flash of the wrong colours
+applyTheme(getTheme());
 
 // ---- Saved scoring settings (edited on the Settings tab, kept on this device) ----
 const SCORING_KEY = "deerScoringSettings";
@@ -3794,6 +3891,8 @@ function App() {
         return window.innerWidth <= 700;
     });
     PHONE_CHARTS = phoneMode;  // tell the chart drawing code whether to draw narrow charts for the phone layout
+    const [theme, setTheme] = useState(getTheme);  // colours of the whole app
+    const [standPowerWeek, setStandPowerWeek] = useState("latest");  // week picked in the stand power rankings
     const [pointsNotice, setPointsNotice] = useState(null);  // lines telling you what the last saved sighting was worth
     const [settingsReset, setSettingsReset] = useState(0);  // goes up on Reset so the number boxes reload their values
     const [settingsVersion, setSettingsVersion] = useState(0);  // goes up when a scoring setting changes so scores redraw
@@ -5087,6 +5186,12 @@ function App() {
         });
 
     }, [stands, cameras, trails, mapVersion, showStands, settingsVersion]);
+
+    // THEME: apply and save the colour choices
+    useEffect(function() {
+        applyTheme(theme);
+        try { localStorage.setItem(THEME_KEY, JSON.stringify(theme)); } catch (error) {}
+    }, [theme]);
 
     // PHONE MODE: save the choice, switch the 'phone' style on the page, and let the map resize to its new box
     useEffect(function() {
@@ -7473,6 +7578,44 @@ function App() {
 
                 e(
                     "div",
+                    { className: "dashboard-card", style: { marginBottom: "20px" } },
+                    e("h3", null, "App colours"),
+                    e("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "14px" } },
+                        Object.keys(THEME_PRESETS).map(function(name) {
+                            return e("button", {
+                                key: name,
+                                className: "secondary",
+                                onClick: function() { setTheme({ ...THEME_PRESETS[name] }); }
+                            }, name);
+                        })
+                    ),
+                    [
+                        ["brand", "Top bar, buttons and big numbers"],
+                        ["brandDark", "Tab bar"],
+                        ["page", "Page background"],
+                        ["card", "Cards and side panel"],
+                        ["text", "Text"]
+                    ].map(function(row) {
+                        return e(
+                            "label",
+                            { key: row[0], style: { display: "flex", alignItems: "center", gap: "12px", padding: "6px 0" } },
+                            e("input", {
+                                type: "color",
+                                value: theme[row[0]],
+                                style: { width: "48px", height: "36px", padding: 0, minHeight: 0, border: "1px solid var(--line)" },
+                                onChange: function(ev) {
+                                    const value = ev.target.value;
+                                    setTheme(function(t) { return { ...t, [row[0]]: value }; });
+                                }
+                            }),
+                            row[1]
+                        );
+                    }),
+                    e("p", { className: "empty", style: { marginBottom: 0 } }, "Charts keep a white background so their labels stay readable. Colours are saved on this device.")
+                ),
+
+                e(
+                    "div",
                     { className: "dashboard-grid" },
 
                     e(
@@ -7658,6 +7801,17 @@ function App() {
                             setView("map");
                             setTimeout(function() { openStand(stand); }, 300);
                         }),
+                        true
+                    ),
+
+                    // Chart: Weekly Stand Power Rankings (stands ranked by their connected cameras' scores)
+                    chartCard(
+                        "standpower",
+                        "Weekly stand power rankings",
+                        (function() {
+                            const pseudo = standPseudoCameras(stands, cameras);
+                            return powerRankingsView(pseudo, powerWeeks(pseudo, Date.now()), standPowerWeek, setStandPowerWeek, "Stand");
+                        })(),
                         true
                     ),
 
@@ -8839,7 +8993,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v12")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v13")
             ),
 
             e(
