@@ -2668,6 +2668,8 @@ function standPseudoCameras(stands, cameras) {
 
             if (!inf) return;
 
+            const stack = standStackMultiplier(stand, camera, cameras);
+
             camera.sightings.forEach(function(sighting) {
 
                 if (hourOfSighting(sighting) === null || sightingTime(sighting) === null) return;
@@ -2676,7 +2678,7 @@ function standPseudoCameras(stands, cameras) {
 
                 sightings.push({
                     ...sighting,
-                    number: raw * inf.influence * directionFactor(sighting, camera, stand),
+                    number: raw * inf.influence * directionFactor(sighting, camera, stand) * stack,
                     rawNumber: raw
                 });
             });
@@ -3029,6 +3031,8 @@ const STAND_SCORE_CONFIG = {
     linkedMaxDist: 200,     // meters: a connected camera fades from full strength at the stand to the minimum at this distance
     linkedMinInfluence: 0.25, // a trail-linked camera at the far end still counts at least this fraction
     linkedBonus: 1.25,       // (no longer used) trail-linked cameras get this extra multiplier (deer actually walk past both)
+    stackEnabled: 1,         // 1 = extra cameras around a stand count less (camera stacking), 0 = plain sum
+    stackFactor: 0.7,        // each next-best connected camera counts this fraction of the one before it
     directionEffect: 0.5     // 0 = ignore direction. 0.5 = a deer walking straight toward the stand counts 1.5x, straight away 0.5x
 };
 
@@ -3140,7 +3144,21 @@ function standInfluence(stand, camera) {
 
 // What ONE sighting is worth to its camera and to each stand that counts that camera
 // (uses the same time-of-day, deer-type, age and direction rules as the real scores).
-function sightingPointsPreview(sighting, camera, stands, trails) {
+function standStackMultiplier(stand, camera, cameras) {
+
+    if (!STAND_SCORE_CONFIG.stackEnabled) return 1;
+
+    const cams = standScore(stand, cameras, [], Date.now()).cams;
+
+    let index = cams.findIndex(function(c) { return String(c.camera.id) === String(camera.id); });
+
+    // a camera with no scored sightings yet would rank last
+    if (index < 0) index = cams.length;
+
+    return Math.pow(STAND_SCORE_CONFIG.stackFactor, index);
+}
+
+function sightingPointsPreview(sighting, camera, stands, trails, cameras) {
 
     const base = sightingScore(sighting, camera, Date.now());
     const forStands = [];
@@ -3153,7 +3171,7 @@ function sightingPointsPreview(sighting, camera, stands, trails) {
 
         forStands.push({
             stand: stand,
-            points: base * inf.influence * directionFactor(sighting, camera, stand),
+            points: base * inf.influence * directionFactor(sighting, camera, stand) * standStackMultiplier(stand, camera, cameras || [camera]),
             manual: inf.manual
         });
     });
@@ -3285,12 +3303,21 @@ function standScore(stand, cameras, trails, now) {
         const contribution = camHours.map(function(v) { return v * influence; });
         const total = contribution.reduce(function(a, b) { return a + b; }, 0);
 
-        contribution.forEach(function(v, h) { hours[h] += v; });
-
         cams.push({ camera: camera, hours: contribution, total: total, influence: influence, linked: linked, manual: inf.manual, dist: dist });
     });
 
     cams.sort(function(a, b) { return b.total - a.total; });
+
+    // CAMERA STACKING: the best camera counts fully, the next stackFactor x as much, then stackFactor^2, and so on,
+    // so adding more cameras around a stand helps but can't swamp the score.
+    cams.forEach(function(c, i) {
+
+        c.stack = STAND_SCORE_CONFIG.stackEnabled ? Math.pow(STAND_SCORE_CONFIG.stackFactor, i) : 1;
+
+        c.hours = c.hours.map(function(v) { return v * c.stack; });
+        c.total *= c.stack;
+        c.hours.forEach(function(v, h) { hours[h] += v; });
+    });
 
     const order = hours.map(function(v, h) { return h; }).sort(function(a, b) { return hours[b] - hours[a]; });
     const grand = hours.reduce(function(a, b) { return a + b; }, 0);
@@ -3450,7 +3477,7 @@ function standRankingsView(stands, cameras, trails, hourChoice, onPickHour, onOp
             "p",
             { className: "empty", style: { marginTop: "10px", marginBottom: 0 } },
             "A stand's score adds up only the cameras you connected to it (stand panel > Connected cameras). A connected camera counts fully at the stand and fades with distance, down to " + STAND_SCORE_CONFIG.linkedMinInfluence + " at " + STAND_SCORE_CONFIG.linkedMaxDist + " m. " +
-            "Each camera's points use deer type, age (" + SCORE_CONFIG.halfLifeDays + "-day half-life), the hour of day, and which way the deer were walking (toward the stand counts more). Sightings with no time are not counted here."
+            (STAND_SCORE_CONFIG.stackEnabled ? "Extra cameras count less (camera stacking, x" + STAND_SCORE_CONFIG.stackFactor + " each). " : "") + "Each camera's points use deer type, age (" + SCORE_CONFIG.halfLifeDays + "-day half-life), the hour of day, and which way the deer were walking (toward the stand counts more). Sightings with no time are not counted here."
         )
     );
 }
@@ -3479,7 +3506,7 @@ function standScoreCard(score) {
                     return e(
                         "div",
                         { key: c.camera.id, style: { fontSize: "13px", display: "flex", justifyContent: "space-between" } },
-                        e("span", null, c.camera.name + " · " + Math.round(c.dist) + " m" + " · " + Math.round(c.influence * 100) + "% strength"),
+                        e("span", null, c.camera.name + " · " + Math.round(c.dist) + " m" + " · " + Math.round(c.influence * 100) + "% strength" + (c.stack < 1 ? " · stacking x" + c.stack.toFixed(2) : "")),
                         e("strong", null, fmtScore(c.total))
                     );
                 })
@@ -5424,7 +5451,7 @@ function App() {
         // Tell the user what this sighting is worth
         setPointsNotice({
             title: "Sighting saved",
-            lines: pointsLines(sightingPointsPreview(sighting, selectedCamera, stands, trails), selectedCamera.name)
+            lines: pointsLines(sightingPointsPreview(sighting, selectedCamera, stands, trails, cameras), selectedCamera.name)
         });
 
         resetSightingForm();
@@ -7663,6 +7690,18 @@ function App() {
                         e("h3", null, "Stand scoring"),
                         field("Fade distance (m)", st, "linkedMaxDist", "A connected camera counts fully at the stand and fades down to the minimum at this distance.", 10),
                         field("Minimum influence", st, "linkedMinInfluence", "0 to 1: how much a connected camera still counts at the fade distance and beyond.", 0.05),
+                        e(
+                            "label",
+                            { key: "stack", style: { display: "flex", alignItems: "center", gap: "10px", padding: "6px 0" } },
+                            e("input", {
+                                type: "checkbox",
+                                checked: st.stackEnabled === 1,
+                                style: { width: "20px", height: "20px", minHeight: 0 },
+                                onChange: function(ev) { setNum(st, "stackEnabled", ev.target.checked ? 1 : 0); }
+                            }),
+                            "Camera stacking (extra cameras around a stand count less)"
+                        ),
+                        field("Stacking factor", st, "stackFactor", "Each next-best connected camera counts this fraction of the one before (0.7 = 100%, 70%, 49%...). 1 = plain sum.", 0.05),
                         field("Direction effect", st, "directionEffect", "0 ignores direction. 0.5 means deer walking toward the stand count 1.5x and away 0.5x. Needs 'Direction of travel' on sightings.", 0.05)
                     )
                 ),
@@ -7674,6 +7713,7 @@ function App() {
                     e("p", null, "Camera score: every sighting = deer count x points for the type x time-of-day multiplier x age fade. The age fade halves it every " + sc.halfLifeDays + " days. Add up all of a camera's sightings."),
                     e("p", null, "Stand score: only cameras you connected to the stand count. For each, take that camera's sightings (same points, same fade), multiply by how strongly the camera counts, and by a direction factor. Add up all those cameras, hour by hour."),
                     e("p", null, "How strongly a camera counts: 100% at the stand, fading in a straight line to " + Math.round(st.linkedMinInfluence * 100) + "% at " + st.linkedMaxDist + " m, and staying at " + Math.round(st.linkedMinInfluence * 100) + "% beyond that."),
+                    e("p", null, st.stackEnabled ? "Camera stacking: a stand's connected cameras are ranked by what they add; the best counts 100%, the next " + Math.round(st.stackFactor * 100) + "%, then " + Math.round(st.stackFactor * st.stackFactor * 100) + "%, and so on." : "Camera stacking is off: every connected camera counts in full."),
                     e("p", { style: { marginBottom: 0 } }, "Direction factor: 1 + " + st.directionEffect + " x cos(angle between the deer's heading and the direction from the camera to the stand). Toward = " + (1 + st.directionEffect) + "x, away = " + (1 - st.directionEffect) + "x, sideways or unknown = 1x.")
                 ),
 
@@ -8834,7 +8874,7 @@ function App() {
                                 "div",
                                 { className: "drawing", style: { marginBottom: "10px" } },
                                 e("strong", null, "Worth if saved now:"),
-                                pointsLines(sightingPointsPreview(draftSighting(), selectedCamera, stands, trails), selectedCamera.name).map(function(line, i) {
+                                pointsLines(sightingPointsPreview(draftSighting(), selectedCamera, stands, trails, cameras), selectedCamera.name).map(function(line, i) {
                                     return e("div", { key: i, style: { fontSize: "13px" } }, line);
                                 })
                             )
@@ -9010,7 +9050,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v16")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v17")
             ),
 
             e(
