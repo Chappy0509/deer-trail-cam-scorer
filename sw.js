@@ -6,7 +6,7 @@
 
 // Name of the saved-copies box. CHANGE THIS NUMBER (v4 -> v5 -> ...) every time
 // you upload a new index.html, so phones throw away the old copy and fetch the new one.
-const CACHE = "deer-cam-v19";
+const CACHE = "deer-cam-v20";
 
 // Box that holds the downloaded satellite map tiles (filled by the Offline map section; must match index.html)
 const TILE_CACHE = "deer-tiles-v1";
