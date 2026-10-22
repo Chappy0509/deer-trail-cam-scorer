@@ -2961,7 +2961,7 @@ function sanitizeStands(list) {
             name: stand.name || "Stand",
             type: stand.type || "Other",
             lat: Number(stand.lat),
-            lng: Number(stand.lng),
+            lng: wrapLng(stand.lng),
             // cameras you connected to this stand by hand (list of camera ids)
             cameraIds: Array.isArray(stand.cameraIds) ? stand.cameraIds : [],
             // wind directions (the way the wind is blowing FROM) this stand is good in; empty = any wind
@@ -3629,7 +3629,7 @@ function getCameras() {
                 id: camera.id || Date.now(),
                 name: camera.name || "Camera",
                 lat: Number(camera.lat),
-                lng: Number(camera.lng),
+                lng: wrapLng(camera.lng),
                 sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
                 facing: camera.facing || "",
                 emailMatch: camera.emailMatch || "",
@@ -3655,7 +3655,12 @@ function getTrails() {
             return [];
         }
 
-        return data;
+        // wrap any trail points that were saved with an out-of-range longitude
+        return data.map(function(trail) {
+            return Array.isArray(trail.points)
+                ? { ...trail, points: trail.points.map(function(p) { return [p[0], wrapLng(p[1])]; }) }
+                : trail;
+        });
 
     } catch {
         return [];
@@ -4228,6 +4233,14 @@ function tileUrlFor(t) {
     return TILE_URL.replace("{z}", t.z).replace("{y}", t.y).replace("{x}", t.x);
 }
 
+// Wraps a longitude into -180..180. Scrolling the map sideways past the edge of the world makes Leaflet report
+// longitudes like -448 for a spot that is really -88, so every saved position is wrapped back.
+function wrapLng(lng) {
+    const n = Number(lng);
+    if (!Number.isFinite(n)) return n;
+    return ((((n + 180) % 360) + 360) % 360) - 180;
+}
+
 // ---- Bucks, hunts, maintenance and the settings bundle ----
 
 // Loads a saved list from this device (empty list if none / broken)
@@ -4786,7 +4799,7 @@ function App() {
                 id: camera.id || Date.now(),
                 name: camera.name || "Camera",
                 lat: Number(camera.lat),
-                lng: Number(camera.lng),
+                lng: wrapLng(camera.lng),
                 sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
                 facing: camera.facing || "",
                 emailMatch: camera.emailMatch || "",
@@ -5339,6 +5352,9 @@ function App() {
         //   3. a trail is being drawn                -> add a point to the trail
         //   4. otherwise                             -> ask for a name and add a new camera here
         map.on("click", function(event) {
+
+            // fix longitudes like -448 (map scrolled past the edge of the world) so positions stay valid
+            event.latlng = event.latlng.wrap();
 
             if (
                 placeMovingCamera(event.latlng) ||
@@ -6552,7 +6568,7 @@ function App() {
                             id: camera.id,
                             name: camera.name,
                             lat: Number(camera.lat),
-                            lng: Number(camera.lng),
+                            lng: wrapLng(camera.lng),
                             sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
                             facing: camera.facing || "",
                             emailMatch: camera.emailMatch || "",
@@ -10575,7 +10591,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v19")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v20")
             ),
 
             e(
