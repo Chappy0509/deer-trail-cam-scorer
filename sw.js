@@ -6,7 +6,10 @@
 
 // Name of the saved-copies box. CHANGE THIS NUMBER (v4 -> v5 -> ...) every time
 // you upload a new index.html, so phones throw away the old copy and fetch the new one.
-const CACHE = "deer-cam-v17";
+const CACHE = "deer-cam-v18";
+
+// Box that holds the downloaded satellite map tiles (filled by the Offline map section; must match index.html)
+const TILE_CACHE = "deer-tiles-v1";
 
 // The files that make up the app itself; saved as soon as the worker installs
 const APP_SHELL = [
@@ -37,7 +40,7 @@ self.addEventListener("activate", function(event) {
             // delete every saved-copies box except the current one (cleans out old versions)
             return Promise.all(
                 keys
-                    .filter(function(key) { return key !== CACHE; })
+                    .filter(function(key) { return key !== CACHE && key !== TILE_CACHE; })  // keep the offline map
                     .map(function(key) { return caches.delete(key); })
             );
         }).then(function() {
@@ -57,13 +60,27 @@ self.addEventListener("fetch", function(event) {
 
     const url = new URL(request.url);
 
-    // Never touch Google sign-in / Google Drive traffic or the satellite map tiles:
+    // Satellite map tiles: use a downloaded copy if we have one (works with no signal), otherwise go to the internet
+    if (url.hostname.endsWith("arcgisonline.com")) {
+        event.respondWith(
+            caches.open(TILE_CACHE).then(function(cache) {
+                return cache.match(request.url).then(function(hit) {
+                    return hit || fetch(request);
+                });
+            }).catch(function() {
+                return fetch(request);
+            })
+        );
+        return;
+    }
+
+    // Never touch Google sign-in / Google Drive traffic or the weather service:
     // they must always go straight to the internet
     if (
         url.hostname.endsWith("google.com") ||
         url.hostname.endsWith("googleapis.com") ||
         url.hostname.endsWith("gstatic.com") ||
-        url.hostname.endsWith("arcgisonline.com")
+        url.hostname.endsWith("open-meteo.com")
     ) {
         return;
     }
