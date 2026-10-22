@@ -3749,7 +3749,17 @@ function propertyCenter(cameras, stands) {
 
 // Open-Meteo is a free weather service that needs no account. These are the hourly values we ask for.
 const WEATHER_VARS = "temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl";
-const WEATHER_UNITS = "&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto";
+const WEATHER_UNITS = "&timezone=auto";  // (the service sends °C and km/h; we convert to °F and mph ourselves)
+
+// Throws an error that includes the weather service's own explanation (it sends a 'reason' with a 400 error)
+async function weatherError(response) {
+
+    let reason = "";
+
+    try { reason = (await response.json()).reason || ""; } catch (error) {}
+
+    return new Error("Weather service error " + response.status + (reason ? ": " + reason : ""));
+}
 
 // Turns Open-Meteo's answer into a list of { time, temp, speed, dir, pressure }
 function parseHourly(json) {
@@ -3761,8 +3771,8 @@ function parseHourly(json) {
     return h.time.map(function(time, i) {
         return {
             time: time,
-            temp: h.temperature_2m ? h.temperature_2m[i] : null,
-            speed: h.wind_speed_10m ? h.wind_speed_10m[i] : null,
+            temp: h.temperature_2m && h.temperature_2m[i] !== null ? h.temperature_2m[i] * 9 / 5 + 32 : null,
+            speed: h.wind_speed_10m && h.wind_speed_10m[i] !== null ? h.wind_speed_10m[i] * 0.621371 : null,
             dir: h.wind_direction_10m ? h.wind_direction_10m[i] : null,
             pressure: h.pressure_msl ? h.pressure_msl[i] : null
         };
@@ -3804,7 +3814,7 @@ async function fetchDayWeather(lat, lng, date) {
 
     const response = await fetch(url);
 
-    if (!response.ok) throw new Error("Weather service error " + response.status);
+    if (!response.ok) throw await weatherError(response);
 
     const byTime = {};
 
@@ -3889,12 +3899,16 @@ function getSavedForecast() {
 // Downloads a 3-day hourly forecast for a spot
 async function fetchForecast(lat, lng) {
 
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        throw new Error("The camera/stand locations aren't valid coordinates (" + lat + ", " + lng + ")");
+    }
+
     const url = "https://api.open-meteo.com/v1/forecast?latitude=" + lat.toFixed(4) + "&longitude=" + lng.toFixed(4) +
         "&hourly=" + WEATHER_VARS + WEATHER_UNITS + "&forecast_days=3";
 
     const response = await fetch(url);
 
-    if (!response.ok) throw new Error("Weather service error " + response.status);
+    if (!response.ok) throw await weatherError(response);
 
     const forecast = { fetchedAt: Date.now(), lat: lat, lng: lng, hours: parseHourly(await response.json()) };
 
@@ -10561,7 +10575,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v18")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v19")
             ),
 
             e(
