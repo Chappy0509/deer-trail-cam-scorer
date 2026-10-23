@@ -4365,6 +4365,189 @@ function buckPathMap(days, cameras, day, uid) {
     return e("svg", { viewBox: "0 0 " + W + " " + H, style: { width: "100%", maxWidth: "460px", display: "block" } }, kids);
 }
 
+// A real satellite map of a buck's movement, with a full-screen button.
+// day = "all" (average route between cameras) or one date (numbered path for that day with heading arrows).
+function BuckMap(props) {
+
+    const boxRef = useRef(null);
+    const mapRef = useRef(null);
+    const layerRef = useRef(null);
+    const [full, setFull] = useState(false);
+
+    // build the map once
+    useEffect(function() {
+
+        if (!boxRef.current || typeof L === "undefined") return;
+
+        const map = L.map(boxRef.current, { zoomControl: true, attributionControl: false, maxZoom: 19 });
+
+        L.tileLayer(TILE_URL, { maxZoom: 19 }).addTo(map);
+
+        mapRef.current = map;
+        layerRef.current = L.layerGroup().addTo(map);
+
+        return function() {
+            try { map.remove(); } catch (error) {}
+            mapRef.current = null;
+            layerRef.current = null;
+        };
+
+    }, []);
+
+    // draw the buck's cameras and route; redraw when the day changes or the size changes
+    useEffect(function() {
+
+        const map = mapRef.current, group = layerRef.current;
+
+        if (!map || !group) return;
+
+        group.clearLayers();
+
+        const days = props.days, day = props.day;
+        const red = "#ff5a4d", green = "#7CFC8A";
+        const fitPoints = [];
+
+        function arrowIcon(bearing, color, size) {
+            return L.divIcon({
+                html: '<div style="transform:rotate(' + bearing + 'deg);color:' + color + ';font-size:' + size + 'px;line-height:' + size + 'px;text-shadow:0 0 3px #000,0 0 3px #000;text-align:center">▲</div>',
+                className: "",
+                iconSize: [size, size],
+                iconAnchor: [size / 2, size / 2]
+            });
+        }
+
+        function midArrow(a, b, color) {
+            const bearing = bearingBetween(a.lat, a.lng, b.lat, b.lng);
+            const f = 0.6;
+            L.marker([a.lat + (b.lat - a.lat) * f, a.lng + (b.lng - a.lng) * f], { icon: arrowIcon(bearing, color, 20), interactive: false }).addTo(group);
+        }
+
+        function nameTag(c, extra) {
+            L.marker([c.lat, c.lng], {
+                interactive: false,
+                icon: L.divIcon({
+                    html: '<div style="color:#fff;font-size:12px;font-weight:600;text-shadow:0 0 3px #000,0 0 3px #000;white-space:nowrap;transform:translate(-50%,-26px)">' + c.name + (extra || "") + '</div>',
+                    className: "",
+                    iconSize: [0, 0]
+                })
+            }).addTo(group);
+        }
+
+        if (day === "all") {
+
+            const avg = buckAverageRoute(days);
+
+            props.cameras.forEach(function(c) {
+
+                const id = String(c.id);
+                const used = !!avg.visits[id];
+
+                L.circleMarker([c.lat, c.lng], {
+                    radius: used ? 7 + Math.min(9, avg.visits[id]) : 4,
+                    color: "#fff", weight: 2, fillColor: used ? red : "#b8b8b8", fillOpacity: used ? 0.85 : 0.9
+                }).addTo(group);
+
+                if (used) {
+                    fitPoints.push([c.lat, c.lng]);
+                    nameTag(c, " · ~" + clockMin(avg.avgMin[id]));
+                }
+            });
+
+            avg.edges.forEach(function(ed) {
+                const a = avg.cams[ed.from], b = avg.cams[ed.to];
+                if (!a || !b) return;
+                L.polyline([[a.lat, a.lng], [b.lat, b.lng]], { color: red, weight: 2 + 5 * ed.count / Math.max(1, avg.maxEdge), opacity: 0.85, interactive: false }).addTo(group);
+                midArrow(a, b, red);
+            });
+
+        } else {
+
+            const list = days[day] || [];
+
+            props.cameras.forEach(function(c) {
+                L.circleMarker([c.lat, c.lng], { radius: 4, color: "#fff", weight: 1.5, fillColor: "#b8b8b8", fillOpacity: 0.9 }).addTo(group);
+            });
+
+            list.forEach(function(v, i) {
+
+                const c = v.camera;
+
+                fitPoints.push([c.lat, c.lng]);
+
+                if (i > 0) {
+                    const p = list[i - 1].camera;
+                    L.polyline([[p.lat, p.lng], [c.lat, c.lng]], { color: red, weight: 4, opacity: 0.9, interactive: false }).addTo(group);
+                    midArrow(p, c, red);
+                }
+
+                // which way he was heading when this camera saw him
+                if (DIRECTION_BEARINGS.hasOwnProperty(v.dir)) {
+                    const bearing = DIRECTION_BEARINGS[v.dir];
+                    const tip = pointAt(c.lat, c.lng, bearing, 35);
+                    L.polyline([[c.lat, c.lng], tip], { color: green, weight: 3, opacity: 0.95, interactive: false }).addTo(group);
+                    L.marker(tip, { icon: arrowIcon(bearing, green, 18), interactive: false }).addTo(group);
+                }
+
+                L.marker([c.lat, c.lng], {
+                    icon: L.divIcon({
+                        html: '<div style="width:24px;height:24px;border-radius:50%;background:' + red + ';color:#fff;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.6)">' + (i + 1) + '</div>',
+                        className: "",
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 12]
+                    })
+                }).addTo(group);
+
+                nameTag(c, " · " + clockMin(v.min));
+            });
+        }
+
+        // zoom to what was drawn (or to all cameras if nothing was)
+        const all = fitPoints.length ? fitPoints : props.cameras.map(function(c) { return [c.lat, c.lng]; });
+
+        map.invalidateSize();
+
+        if (all.length === 1) {
+            map.setView(all[0], 17);
+        } else if (all.length > 1) {
+            map.fitBounds(all, { padding: [50, 50], maxZoom: 18 });
+        }
+
+    }, [props.day, props.days, props.cameras, full]);
+
+    // Esc closes full screen
+    useEffect(function() {
+
+        if (!full) return;
+
+        function onKey(ev) { if (ev.key === "Escape") setFull(false); }
+
+        document.addEventListener("keydown", onKey);
+
+        return function() { document.removeEventListener("keydown", onKey); };
+
+    }, [full]);
+
+    return e(
+        "div",
+        {
+            style: full
+                ? { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 5000, background: "#000" }
+                : { position: "relative", margin: "6px 0" }
+        },
+        e("div", { ref: boxRef, style: { width: "100%", height: full ? "100%" : "300px", borderRadius: full ? 0 : "8px", overflow: "hidden", background: "#222" } }),
+        e("div", { style: { position: "absolute", top: full ? "calc(env(safe-area-inset-top, 0px) + 10px)" : "10px", right: "10px", zIndex: 1200, display: "flex", gap: "6px", maxWidth: "calc(100% - 70px)" } },
+            full && props.dayOptions
+                ? e("select", { value: props.day, style: { maxWidth: "220px" }, onChange: function(ev) { props.onDay(ev.target.value); } },
+                    props.dayOptions.map(function(o) { return e("option", { key: o[0], value: o[0] }, o[1]); }))
+                : null,
+            e("button", { className: "primary", style: { minHeight: 0, padding: "6px 12px" }, onClick: function() { setFull(!full); } }, full ? "✕ Close" : "⛶ Full screen")),
+        full
+            ? e("div", { style: { position: "absolute", left: "10px", bottom: "calc(env(safe-area-inset-bottom, 0px) + 14px)", zIndex: 1200, background: "rgba(0,0,0,.65)", color: "#fff", padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "70%" } },
+                (props.title || "") + (props.day === "all" ? " · average route (red arrows = camera to camera, thicker = more often)" : " · " + props.day + " (numbers = order, green arrows = heading)"))
+            : null
+    );
+}
+
 // A small sketch of where a buck has been seen: bigger dot = more sightings. Grey dots are your other cameras.
 function buckMiniMap(st, cameras) {
 
@@ -10867,7 +11050,15 @@ function App() {
             e("select", { value: day, style: { marginBottom: "8px" }, onChange: function(ev) { const v = ev.target.value; setBuckDay(function(prev) { return { ...prev, [buck.id]: v }; }); } },
                 e("option", { value: "all" }, "Average of all days (" + dates.length + ")"),
                 dates.map(function(d) { return e("option", { key: d, value: d }, d + " (" + days[d].length + " stop" + (days[d].length === 1 ? "" : "s") + ")"); })),
-            buckPathMap(days, cameras, day, String(buck.id)),
+            e(BuckMap, {
+                key: "bm" + buck.id,
+                days: days,
+                cameras: cameras,
+                day: day,
+                title: buck.name,
+                dayOptions: [["all", "Average of all days"]].concat(dates.map(function(d) { return [d, d]; })),
+                onDay: function(v) { setBuckDay(function(prev) { return { ...prev, [buck.id]: v }; }); }
+            }),
             e("div", { className: "empty", style: { fontSize: "12px", margin: "4px 0" } },
                 day === "all"
                     ? "Arrows point from one camera to the next camera he showed up at the same day; thicker = more often."
@@ -10983,7 +11174,6 @@ function App() {
                                         e("div", { style: { fontWeight: 600, margin: "8px 0 4px" } }, "When he moves (deer by hour)"),
                                         columnChart(st.hours.map(function(v, h) { return { label: hourShort(h), value: v, title: hourLabel(h) + ": " + v }; }), "#7b1e1e", 3),
                                         e("div", { style: { fontWeight: 600, margin: "8px 0 4px" } }, "Where he's been seen"),
-                                        buckMiniMap(st, cameras),
                                         (function() {
                                             // stands that have one of his top cameras connected
                                             const topIds = {};
@@ -12822,7 +13012,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v23")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v24")
             ),
 
             e(
