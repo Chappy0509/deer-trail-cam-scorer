@@ -2954,6 +2954,23 @@ function matchesHeatFilter(type, filter) {
     return type === filter;
 }
 
+// The walk-in route: a list of [lat, lng] points from where you start to the stand (the stand itself is the last stop).
+// Older saves only had a single start point (entryLat / entryLng); that becomes a one-point route.
+function cleanEntryPath(stand) {
+
+    let list = [];
+
+    if (Array.isArray(stand.entryPath)) {
+        list = stand.entryPath;
+    } else if (stand.entryLat !== undefined && stand.entryLat !== null && stand.entryLng !== undefined && stand.entryLng !== null) {
+        list = [[stand.entryLat, stand.entryLng]];
+    }
+
+    return list.filter(function(p) {
+        return Array.isArray(p) && Number.isFinite(Number(p[0])) && Number.isFinite(Number(p[1]));
+    }).map(function(p) { return [Number(p[0]), wrapLng(p[1])]; });
+}
+
 // Cleans a list of stands (from storage, Drive or a backup): fills in missing values and drops broken ones
 function sanitizeStands(list) {
 
@@ -2973,8 +2990,7 @@ function sanitizeStands(list) {
             // wind directions (the way the wind is blowing FROM) this stand is good in; empty = any wind
             safeWinds: Array.isArray(stand.safeWinds) ? stand.safeWinds : [],
             // where you start your walk in (a straight line from here to the stand); null = not set
-            entryLat: stand.entryLat !== undefined && stand.entryLat !== null && Number.isFinite(Number(stand.entryLat)) ? Number(stand.entryLat) : null,
-            entryLng: stand.entryLng !== undefined && stand.entryLng !== null && Number.isFinite(Number(stand.entryLng)) ? wrapLng(stand.entryLng) : null
+            entryPath: cleanEntryPath(stand)
         };
     }).filter(function(stand) {
         return Number.isFinite(stand.lat) &&
@@ -3909,21 +3925,76 @@ function inScentCone(stand, lat, lng, windFrom, range) {
 
 // ---- Scent check: walk-in route + sitting scent against what's marked on the map ----
 // Points along the walk from the entry point to the stand (every ~30 m). Empty if no entry point is set.
+function routePoints(stand) {
+
+    const path = stand.entryPath || [];
+
+    if (!path.length) return [];
+
+    return path.map(function(p) { return { lat: p[0], lng: p[1] }; }).concat([{ lat: stand.lat, lng: stand.lng }]);
+}
+
+function routeLength(stand) {
+
+    const pts = routePoints(stand);
+    let total = 0;
+
+    for (let i = 1; i < pts.length; i++) total += metersBetween(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng);
+
+    return total;
+}
+
+// Points along the whole walk (every ~30 m, following the route's bends). Empty if no route is set.
 function walkSamples(stand) {
 
+    const route = routePoints(stand);
     const pts = [];
 
-    if (!Number.isFinite(stand.entryLat) || !Number.isFinite(stand.entryLng)) return pts;
+    for (let i = 1; i < route.length; i++) {
 
-    const d = metersBetween(stand.entryLat, stand.entryLng, stand.lat, stand.lng);
-    const n = Math.max(1, Math.ceil(d / 30));
+        const a = route[i - 1], b = route[i];
+        const n = Math.max(1, Math.ceil(metersBetween(a.lat, a.lng, b.lat, b.lng) / 30));
 
-    for (let i = 0; i < n; i++) {
-        const f = i / n;
-        pts.push({ lat: stand.entryLat + (stand.lat - stand.entryLat) * f, lng: stand.entryLng + (stand.lng - stand.entryLng) * f });
+        for (let k = 0; k < n; k++) {
+            const f = k / n;
+            pts.push({ lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f });
+        }
     }
 
     return pts;
+}
+
+// If a tapped spot is within 'maxMeters' of one of your drawn trails, returns the nearest point ON the trail; else null
+function snapToTrails(lat, lng, trails, maxMeters) {
+
+    const k = Math.cos(lat * Math.PI / 180);
+    let best = null, bestD = maxMeters;
+
+    (trails || []).forEach(function(trail) {
+
+        const pts = trail.points || [];
+
+        for (let i = 1; i < pts.length; i++) {
+
+            // work in meters around the tapped spot
+            const ax = (pts[i - 1][1] - lng) * 111320 * k, ay = (pts[i - 1][0] - lat) * 111320;
+            const bx = (pts[i][1] - lng) * 111320 * k, by = (pts[i][0] - lat) * 111320;
+            const dx = bx - ax, dy = by - ay;
+            const len2 = dx * dx + dy * dy;
+            let t = len2 ? -(ax * dx + ay * dy) / len2 : 0;
+
+            t = Math.max(0, Math.min(1, t));
+
+            const d = Math.hypot(ax + dx * t, ay + dy * t);
+
+            if (d < bestD) {
+                bestD = d;
+                best = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+            }
+        }
+    });
+
+    return best;
 }
 
 // What your scent would reach with this wind (degrees it blows FROM).
@@ -4122,6 +4193,176 @@ async function decodeSnapshot(text) {
     }
 
     return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+// ---- Buck movement: where a buck went each day, in order, and which way he was heading ----
+function minutesOfTime(t) {
+    const p = String(t || "").split(":").map(Number);
+    return Number.isFinite(p[0]) && String(t).indexOf(":") !== -1 ? p[0] * 60 + (p[1] || 0) : null;
+}
+
+function clockMin(m) {
+    const h = Math.floor(m / 60) % 24, mm = Math.round(m % 60);
+    return (h % 12 === 0 ? 12 : h % 12) + ":" + String(mm).padStart(2, "0") + (h < 12 ? " AM" : " PM");
+}
+
+// { 'YYYY-MM-DD': [ { camera, min, dir, n } ... in time order ] } - consecutive photos at the same camera count as one stop
+function buckDayVisits(st) {
+
+    const days = {};
+
+    st.rows.forEach(function(r) {
+
+        const sg = r.sighting;
+        const m = minutesOfTime(sg.time);
+
+        if (!sg.date || m === null) return;
+
+        (days[sg.date] = days[sg.date] || []).push({ camera: r.camera, min: m, dir: sg.direction || "", n: Number(sg.number || 1) });
+    });
+
+    Object.keys(days).forEach(function(d) {
+
+        days[d].sort(function(a, b) { return a.min - b.min; });
+
+        const merged = [];
+
+        days[d].forEach(function(v) {
+            const last = merged[merged.length - 1];
+            if (!last || last.camera.id !== v.camera.id) merged.push(v);
+        });
+
+        days[d] = merged;
+    });
+
+    return days;
+}
+
+// Across all days: how often he went from one camera to the next, and the typical order of his route
+function buckAverageRoute(days) {
+
+    const edges = {}, firsts = {}, minutes = {}, visits = {}, cams = {};
+    let maxEdge = 0;
+
+    Object.keys(days).forEach(function(d) {
+
+        const list = days[d];
+
+        list.forEach(function(v, i) {
+            const id = String(v.camera.id);
+            cams[id] = v.camera;
+            visits[id] = (visits[id] || 0) + 1;
+            (minutes[id] = minutes[id] || []).push(v.min);
+            if (i === 0) firsts[id] = (firsts[id] || 0) + 1;
+            if (i > 0 && v.min - list[i - 1].min <= 8 * 60) {
+                const key = list[i - 1].camera.id + ">" + v.camera.id;
+                edges[key] = (edges[key] || { from: String(list[i - 1].camera.id), to: id, count: 0 });
+                edges[key].count++;
+                if (edges[key].count > maxEdge) maxEdge = edges[key].count;
+            }
+        });
+    });
+
+    // typical route: begin at the camera he's most often seen at first, then keep following his most common next camera
+    const ids = Object.keys(cams);
+    const route = [];
+
+    if (ids.length) {
+
+        let current = ids.slice().sort(function(a, b) { return (firsts[b] || 0) - (firsts[a] || 0) || visits[b] - visits[a]; })[0];
+
+        while (current && route.indexOf(current) === -1) {
+            route.push(current);
+            const next = Object.keys(edges).map(function(k) { return edges[k]; })
+                .filter(function(ed) { return ed.from === current && route.indexOf(ed.to) === -1; })
+                .sort(function(a, b) { return b.count - a.count; })[0];
+            current = next ? next.to : null;
+        }
+    }
+
+    const avgMin = {};
+    ids.forEach(function(id) { avgMin[id] = minutes[id].reduce(function(a, b) { return a + b; }, 0) / minutes[id].length; });
+
+    return { edges: Object.keys(edges).map(function(k) { return edges[k]; }), maxEdge: maxEdge, cams: cams, visits: visits, avgMin: avgMin, route: route };
+}
+
+// Draws his movement on a sketch of your cameras. day = "all" (average route) or one date (that day's path, numbered).
+function buckPathMap(days, cameras, day, uid) {
+
+    const W = 320, H = 210, pad = 28;
+    const lats = cameras.map(function(c) { return c.lat; }), lngs = cameras.map(function(c) { return c.lng; });
+
+    if (!cameras.length) return null;
+
+    const minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    const minLng = Math.min.apply(null, lngs), maxLng = Math.max.apply(null, lngs);
+    const k = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
+    const spanX = Math.max((maxLng - minLng) * k, 1e-6), spanY = Math.max(maxLat - minLat, 1e-6);
+    const scale = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+    const offX = (W - spanX * scale) / 2, offY = (H - spanY * scale) / 2;
+
+    function px(c) { return offX + (c.lng - minLng) * k * scale; }
+    function py(c) { return offY + (maxLat - c.lat) * scale; }
+
+    const kids = [
+        e("defs", { key: "defs" },
+            e("marker", { id: "arr" + uid, markerWidth: 8, markerHeight: 8, refX: 6, refY: 4, orient: "auto" }, e("path", { d: "M0,0 L8,4 L0,8 z", fill: "#7b1e1e" })),
+            e("marker", { id: "hd" + uid, markerWidth: 8, markerHeight: 8, refX: 6, refY: 4, orient: "auto" }, e("path", { d: "M0,0 L8,4 L0,8 z", fill: "#1f4d2b" }))),
+        e("rect", { key: "bg", x: 0, y: 0, width: W, height: H, rx: 8, fill: "#f2f2ee", stroke: "#ddd" })
+    ];
+
+    function arrowLine(key, a, b, width, opacity, markerId, trim) {
+        const dx = px(b) - px(a), dy = py(b) - py(a), len = Math.hypot(dx, dy) || 1;
+        return e("line", { key: key, x1: px(a) + dx / len * trim, y1: py(a) + dy / len * trim, x2: px(b) - dx / len * trim, y2: py(b) - dy / len * trim, stroke: "#7b1e1e", strokeWidth: width, strokeOpacity: opacity, markerEnd: "url(#" + markerId + ")" });
+    }
+
+    const seen = {};
+
+    if (day === "all") {
+
+        const avg = buckAverageRoute(days);
+
+        cameras.forEach(function(c) {
+            const id = String(c.id);
+            const used = !!avg.visits[id];
+            kids.push(e("circle", { key: "c" + id, cx: px(c), cy: py(c), r: used ? 6 + Math.min(8, avg.visits[id]) : 3.5, fill: used ? "#7b1e1e" : "#b8b8b8", fillOpacity: used ? 0.8 : 1, stroke: "#fff", strokeWidth: 1.5 }));
+            if (used) kids.push(e("text", { key: "t" + id, x: px(c), y: py(c) - 12 - Math.min(8, avg.visits[id]), textAnchor: "middle", fontSize: 10, fill: "#333" }, c.name));
+        });
+
+        avg.edges.forEach(function(ed, i) {
+            const a = avg.cams[ed.from], b = avg.cams[ed.to];
+            if (!a || !b) return;
+            kids.push(arrowLine("e" + i, a, b, 1.5 + 4 * ed.count / Math.max(1, avg.maxEdge), 0.7, "arr" + uid, 11));
+        });
+
+    } else {
+
+        const list = days[day] || [];
+
+        cameras.forEach(function(c) {
+            kids.push(e("circle", { key: "c" + c.id, cx: px(c), cy: py(c), r: 3.5, fill: "#b8b8b8", stroke: "#fff", strokeWidth: 1 }));
+        });
+
+        list.forEach(function(v, i) {
+
+            if (i > 0) kids.push(arrowLine("p" + i, list[i - 1].camera, v.camera, 3, 0.85, "arr" + uid, 11));
+
+            const c = v.camera;
+            kids.push(e("circle", { key: "v" + i, cx: px(c), cy: py(c), r: 9, fill: "#7b1e1e", stroke: "#fff", strokeWidth: 1.5 }));
+            kids.push(e("text", { key: "n" + i, x: px(c), y: py(c) + 3.5, textAnchor: "middle", fontSize: 11, fontWeight: 700, fill: "#fff" }, i + 1));
+            kids.push(e("text", { key: "l" + i, x: px(c), y: py(c) - 14, textAnchor: "middle", fontSize: 10, fill: "#333" }, c.name));
+
+            // which way he was heading when the camera saw him
+            if (DIRECTION_BEARINGS.hasOwnProperty(v.dir)) {
+                const ang = DIRECTION_BEARINGS[v.dir] * Math.PI / 180;
+                kids.push(e("line", { key: "h" + i, x1: px(c) + Math.sin(ang) * 11, y1: py(c) - Math.cos(ang) * 11, x2: px(c) + Math.sin(ang) * 28, y2: py(c) - Math.cos(ang) * 28, stroke: "#1f4d2b", strokeWidth: 2.5, markerEnd: "url(#hd" + uid + ")" }));
+            }
+        });
+    }
+
+    kids.push(e("text", { key: "north", x: W - 14, y: 16, textAnchor: "middle", fontSize: 11, fill: "#666" }, "N ↑"));
+
+    return e("svg", { viewBox: "0 0 " + W + " " + H, style: { width: "100%", maxWidth: "460px", display: "block" } }, kids);
 }
 
 // A small sketch of where a buck has been seen: bigger dot = more sightings. Grey dots are your other cameras.
@@ -5386,6 +5627,7 @@ function App() {
     const [histWx, setHistWx] = useState(getSavedHist);  // weather history used for weather learning
     const [chartSeason, setChartSeason] = useState("all");  // Charts tab season filter
     const [rutBucksOnly, setRutBucksOnly] = useState(true);  // rut tracker counts bucks only?
+    const [buckDay, setBuckDay] = useState({});  // per buck: 'all' or the date shown in its movement map
     const [entryDraft, setEntryDraft] = useState(null);  // id of the stand whose walk-in start point is being placed
     const [readOnly, setReadOnly] = useState(false);  // true while viewing someone else's shared snapshot
     const [notify, setNotify] = useState(getNotifyPrefs);  // alert preferences
@@ -5456,6 +5698,7 @@ function App() {
     const standMarkersRef = useRef({});  // stand id -> its triangle on the map
     const standDraftRef = useRef(null);  // copy of standDraft for the map click handler
     const featureDraftRef = useRef(null);  // copy of featureDraft for map click handlers
+    const trailsRef = useRef([]);  // newest trails for the map click handler
     const entryDraftRef = useRef(null);  // copy of entryDraft for the map click handler
     const readOnlyRef = useRef(false);  // true while a shared snapshot is open: nothing is saved or synced
     const entryLayerRef = useRef(null);  // the walk-in line drawn on the map
@@ -5472,6 +5715,7 @@ function App() {
     standDraftRef.current = standDraft;
     featureDraftRef.current = featureDraft;
     entryDraftRef.current = entryDraft;
+    trailsRef.current = trails;
     alertDataRef.current = { cameras: cameras, stands: stands, trails: trails, forecast: forecast, bucks: bucks };
     showTrailsRef.current = showTrails;
     showStandsRef.current = showStands;
@@ -6225,18 +6469,18 @@ function App() {
                 return;
             }
 
-            // Setting where you start your walk in to a stand
+            // Drawing a walk-in route: each tap adds a point (snapped onto a nearby trail you drew)
             if (entryDraftRef.current) {
 
                 const standId = entryDraftRef.current;
-                const at = event.latlng;
+                let at = [event.latlng.lat, event.latlng.lng];
+                const snapped = snapToTrails(at[0], at[1], trailsRef.current, 25);
+
+                if (snapped) at = [snapped[0], wrapLng(snapped[1])];
 
                 setStands(function(previous) {
-                    return previous.map(function(st) { return st.id === standId ? { ...st, entryLat: at.lat, entryLng: at.lng } : st; });
+                    return previous.map(function(st) { return st.id === standId ? { ...st, entryPath: (st.entryPath || []).concat([at]) } : st; });
                 });
-
-                entryDraftRef.current = null;
-                setEntryDraft(null);
 
                 return;
             }
@@ -7064,7 +7308,7 @@ function App() {
 
     }, [selectedStandId, stands, scentOn, scentWind, scentRange, forecast, mapVersion]);
 
-    // WALK-IN LINE: dashed line from the entry point to the open stand
+    // WALK-IN ROUTE: the dashed route to the open stand, with green dots you can drag to adjust it
     useEffect(function() {
 
         const map = mapRef.current;
@@ -7076,13 +7320,40 @@ function App() {
             entryLayerRef.current = null;
         }
 
-        if (!selectedStand || !Number.isFinite(selectedStand.entryLat) || !Number.isFinite(selectedStand.entryLng)) return;
+        if (!selectedStand || !(selectedStand.entryPath || []).length) return;
 
-        const group = L.layerGroup([
-            L.polyline([[selectedStand.entryLat, selectedStand.entryLng], [selectedStand.lat, selectedStand.lng]], { color: "#1f4d2b", weight: 3, dashArray: "6 8", interactive: false }),
-            L.circleMarker([selectedStand.entryLat, selectedStand.entryLng], { radius: 7, color: "#fff", weight: 2, fillColor: "#1f4d2b", fillOpacity: 1, interactive: false })
-        ]).addTo(map);
+        const standId = selectedStand.id;
+        const group = L.layerGroup();
 
+        group.addLayer(L.polyline(routePoints(selectedStand).map(function(p) { return [p.lat, p.lng]; }), { color: "#1f4d2b", weight: 4, dashArray: "6 8", interactive: false }));
+
+        selectedStand.entryPath.forEach(function(p, i) {
+
+            const marker = L.marker(p, {
+                draggable: true,
+                icon: L.divIcon({
+                    html: '<div style="width:18px;height:18px;border-radius:50%;background:' + (i === 0 ? "#1f4d2b" : "#3f9a5b") + ';border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>',
+                    className: "",
+                    iconSize: [18, 18],
+                    iconAnchor: [9, 9]
+                })
+            });
+
+            if (i === 0) marker.bindTooltip("Start");
+
+            marker.on("dragend", function(ev) {
+                const ll = ev.target.getLatLng().wrap();
+                setStands(function(previous) {
+                    return previous.map(function(st) {
+                        return st.id === standId ? { ...st, entryPath: st.entryPath.map(function(q, j) { return j === i ? [ll.lat, ll.lng] : q; }) } : st;
+                    });
+                });
+            });
+
+            group.addLayer(marker);
+        });
+
+        group.addTo(map);
         entryLayerRef.current = group;
 
     }, [selectedStandId, stands, mapVersion]);
@@ -9778,10 +10049,11 @@ function App() {
         const camsInCone = from === null ? [] : cameras.filter(function(c) { return inScentCone(stand, c.lat, c.lng, from, scentRange); });
 
         // Walk-in route + scent check (works with the forecast or a wind you pick)
-        const hasEntry = Number.isFinite(stand.entryLat) && Number.isFinite(stand.entryLng);
+        const pathPoints = stand.entryPath || [];
+        const hasEntry = pathPoints.length > 0;
         const checkWind = scentWindFrom();
         const risks = checkWind === null ? null : scentRisks(stand, cameras, features, checkWind, scentRange);
-        const walkLen = hasEntry ? Math.round(metersBetween(stand.entryLat, stand.entryLng, stand.lat, stand.lng)) : 0;
+        const walkLen = Math.round(routeLength(stand));
 
         return e(
             React.Fragment,
@@ -9791,14 +10063,17 @@ function App() {
                 "div",
                 { className: "card" },
                 e("h3", null, "Walk-in route"),
-                e("p", { className: "empty", style: { marginTop: 0 } }, "Mark where you start walking in. The app checks whether your scent, on the way in and while sitting, blows over bedding, food, water, sign or cameras with recent deer."),
+                e("p", { className: "empty", style: { marginTop: 0 } }, "Draw the way you walk in, bend by bend, so it follows your trails instead of cutting through the woods. The app checks whether your scent, on the way in and while sitting, blows over bedding, food, water, sign or cameras with recent deer."),
                 entryDraft === stand.id
-                    ? e("div", { className: "drawing" }, "Tap the map where your walk starts.",
-                        e("div", null, e("button", { className: "cancel-button", style: { marginTop: "6px" }, onClick: function() { entryDraftRef.current = null; setEntryDraft(null); } }, "Cancel")))
+                    ? e("div", { className: "drawing" }, "Tap the map along your walk, starting where you park and ending near the stand. Taps close to a trail you drew snap onto it. " + pathPoints.length + " point" + (pathPoints.length === 1 ? "" : "s") + " so far.",
+                        e("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" } },
+                            e("button", { className: "primary", onClick: function() { entryDraftRef.current = null; setEntryDraft(null); } }, "Done"),
+                            pathPoints.length ? e("button", { className: "secondary", onClick: function() { updateStand(stand.id, { entryPath: pathPoints.slice(0, -1) }); } }, "Undo last point") : null))
                     : e("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
-                        e("button", { className: "secondary", onClick: function() { entryDraftRef.current = stand.id; setEntryDraft(stand.id); } }, hasEntry ? "Move start point" : "Set start point"),
-                        hasEntry ? e("button", { className: "secondary", onClick: function() { updateStand(stand.id, { entryLat: null, entryLng: null }); } }, "Clear") : null),
-                hasEntry ? e("p", { style: { margin: "0 0 6px", fontSize: "14px" } }, "Walk of about " + walkLen + " m, bearing " + windCode(bearingBetween(stand.entryLat, stand.entryLng, stand.lat, stand.lng)) + ".") : null,
+                        e("button", { className: "secondary", onClick: function() { entryDraftRef.current = stand.id; setEntryDraft(stand.id); } }, hasEntry ? "Add points" : "Draw route"),
+                        hasEntry ? e("button", { className: "secondary", onClick: function() { updateStand(stand.id, { entryPath: [] }); entryDraftRef.current = stand.id; setEntryDraft(stand.id); } }, "Redraw") : null,
+                        hasEntry ? e("button", { className: "secondary", onClick: function() { updateStand(stand.id, { entryPath: [] }); } }, "Clear") : null),
+                hasEntry ? e("p", { style: { margin: "0 0 6px", fontSize: "14px" } }, "About " + walkLen + " m of walking. Drag the green dots on the map to adjust the route.") : null,
                 e("div", { className: "form-group" }, e("label", null, "Check against wind"),
                     e("select", { value: scentWind, onChange: function(ev) { setScentWind(ev.target.value); } },
                         e("option", { value: "now" }, "Forecast: right now"),
@@ -10565,6 +10840,58 @@ function App() {
     }
 
     // ---- BUCKS TAB: one card per named buck ----
+    // The "Movement" part of a buck's card: route map, average times, and a day-by-day line
+    function buckMovementView(buck, st) {
+
+        const days = buckDayVisits(st);
+        const dates = Object.keys(days).sort().reverse();
+
+        if (!dates.length) return e("p", { className: "empty" }, "Movement needs sightings with a time. None of his sightings have one yet.");
+
+        let day = buckDay[buck.id] || "all";
+        if (day !== "all" && !days[day]) day = "all";
+
+        const avg = buckAverageRoute(days);
+
+        function dirArrow(v) {
+            const d = DIRECTIONS.find(function(x) { return x.value === v; });
+            return d ? " " + d.arrow : "";
+        }
+
+        const shownDates = day === "all" ? dates.slice(0, 7) : [day];
+
+        return e(
+            "div",
+            null,
+            e("div", { style: { fontWeight: 600, margin: "10px 0 4px" } }, "How he moves"),
+            e("select", { value: day, style: { marginBottom: "8px" }, onChange: function(ev) { const v = ev.target.value; setBuckDay(function(prev) { return { ...prev, [buck.id]: v }; }); } },
+                e("option", { value: "all" }, "Average of all days (" + dates.length + ")"),
+                dates.map(function(d) { return e("option", { key: d, value: d }, d + " (" + days[d].length + " stop" + (days[d].length === 1 ? "" : "s") + ")"); })),
+            buckPathMap(days, cameras, day, String(buck.id)),
+            e("div", { className: "empty", style: { fontSize: "12px", margin: "4px 0" } },
+                day === "all"
+                    ? "Arrows point from one camera to the next camera he showed up at the same day; thicker = more often."
+                    : "Numbers show the order he passed the cameras. Green arrows show the direction he was heading at each photo."),
+            day === "all" && avg.route.length > 1
+                ? e("div", { style: { fontSize: "14px", margin: "6px 0" } },
+                    e("strong", null, "Typical route: "),
+                    avg.route.map(function(id) { return avg.cams[id].name + " (~" + clockMin(avg.avgMin[id]) + ")"; }).join(" → "))
+                : null,
+            day === "all"
+                ? e("div", { style: { fontSize: "13px", margin: "4px 0" } },
+                    Object.keys(avg.cams).sort(function(a, b) { return avg.avgMin[a] - avg.avgMin[b]; }).map(function(id) {
+                        return e("div", { key: id }, avg.cams[id].name + ": usually around " + clockMin(avg.avgMin[id]) + " (" + avg.visits[id] + " day" + (avg.visits[id] === 1 ? "" : "s") + ")");
+                    }))
+                : null,
+            e("div", { style: { fontWeight: 600, margin: "10px 0 4px" } }, day === "all" ? "Latest days" : "That day"),
+            shownDates.map(function(d) {
+                return e("div", { key: d, style: { fontSize: "13px", padding: "3px 0", borderTop: "1px solid var(--line, #e3e3e3)" } },
+                    e("strong", null, d.slice(5) + " "),
+                    days[d].map(function(v) { return clockMin(v.min) + " " + v.camera.name + dirArrow(v.dir); }).join("  →  "));
+            })
+        );
+    }
+
     function bucksPage() {
 
         function addBuck() {
@@ -10670,6 +10997,7 @@ function App() {
                                                 st.rows.length >= 2 && Math.max.apply(null, st.hours) > 0 ? "Usually moves around " + hourLabel(top) + ". " : "",
                                                 near.length ? "Stands covering his cameras: " + near.map(function(r) { return r.sd.name + " (" + r.hits + ")"; }).join(", ") + "." : "No stand has his cameras connected yet.");
                                         })(),
+                                        buckMovementView(buck, st),
                                         st.cameras.map(function(c) {
                                             return e("div", { key: c.name, style: { display: "flex", justifyContent: "space-between", fontSize: "14px" } }, e("span", null, c.name), e("strong", null, c.count));
                                         }),
@@ -12494,7 +12822,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v22")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v23")
             ),
 
             e(
