@@ -1016,7 +1016,8 @@ const SCORE_CONFIG = {
     legalBufferMinutes: 30,     // legal shooting light = this long before sunrise to this long after sunset (check your state's rules)
     weatherAdjust: 0,           // 1 = the Hunt planner adjusts hour scores using what your sightings say about weather
     weatherPriorHours: 40,      // how cautious the weather learning is (higher = needs more data before it moves a score)
-    weatherMinDays: 14          // days of history needed before weather learning is used
+    weatherMinDays: 14,         // days of history needed before weather learning is used
+    buckAlertDays: 10           // a named buck not seen for this many days shows an alert
 };
 
 // How many hours away an hour of the day is from the nearest prime window (0 = inside a window).
@@ -2970,7 +2971,10 @@ function sanitizeStands(list) {
             // cameras you connected to this stand by hand (list of camera ids)
             cameraIds: Array.isArray(stand.cameraIds) ? stand.cameraIds : [],
             // wind directions (the way the wind is blowing FROM) this stand is good in; empty = any wind
-            safeWinds: Array.isArray(stand.safeWinds) ? stand.safeWinds : []
+            safeWinds: Array.isArray(stand.safeWinds) ? stand.safeWinds : [],
+            // where you start your walk in (a straight line from here to the stand); null = not set
+            entryLat: stand.entryLat !== undefined && stand.entryLat !== null && Number.isFinite(Number(stand.entryLat)) ? Number(stand.entryLat) : null,
+            entryLng: stand.entryLng !== undefined && stand.entryLng !== null && Number.isFinite(Number(stand.entryLng)) ? wrapLng(stand.entryLng) : null
         };
     }).filter(function(stand) {
         return Number.isFinite(stand.lat) &&
@@ -3903,6 +3907,262 @@ function inScentCone(stand, lat, lng, windFrom, range) {
     return diff <= SCENT_HALF_ANGLE;
 }
 
+// ---- Scent check: walk-in route + sitting scent against what's marked on the map ----
+// Points along the walk from the entry point to the stand (every ~30 m). Empty if no entry point is set.
+function walkSamples(stand) {
+
+    const pts = [];
+
+    if (!Number.isFinite(stand.entryLat) || !Number.isFinite(stand.entryLng)) return pts;
+
+    const d = metersBetween(stand.entryLat, stand.entryLng, stand.lat, stand.lng);
+    const n = Math.max(1, Math.ceil(d / 30));
+
+    for (let i = 0; i < n; i++) {
+        const f = i / n;
+        pts.push({ lat: stand.entryLat + (stand.lat - stand.entryLat) * f, lng: stand.entryLng + (stand.lng - stand.entryLng) * f });
+    }
+
+    return pts;
+}
+
+// What your scent would reach with this wind (degrees it blows FROM).
+// Checks food plots, water, bedding, scrapes, rubs, and cameras with deer in the last 14 days.
+// Returns [{ label, emoji, high, sit, walk, near, dist }] with the worst first.
+function scentRisks(stand, cameras, features, windFrom, range) {
+
+    if (windFrom === null || windFrom === undefined) return [];
+
+    const samples = walkSamples(stand);
+    const targets = [];
+
+    features.forEach(function(f) {
+        const t = featureType(f.type);
+        targets.push({ key: "f" + f.id, label: f.name, emoji: t.emoji, lat: f.lat, lng: f.lng, high: f.type === "Bedding" || f.type === "Food plot" });
+    });
+
+    cameras.forEach(function(c) {
+        const recent = c.sightings.some(function(sg) {
+            const age = daysSince(sg.date);
+            return age !== null && age <= 14;
+        });
+        if (recent) targets.push({ key: "c" + c.id, label: c.name, emoji: "📷", lat: c.lat, lng: c.lng, high: false });
+    });
+
+    const out = [];
+
+    targets.forEach(function(tg) {
+
+        const dist = metersBetween(stand.lat, stand.lng, tg.lat, tg.lng);
+        const sit = inScentCone(stand, tg.lat, tg.lng, windFrom, range);
+        const walk = samples.some(function(p) { return inScentCone(p, tg.lat, tg.lng, windFrom, range * 0.6); });
+        const near = samples.some(function(p) { return metersBetween(p.lat, p.lng, tg.lat, tg.lng) <= 40; });
+
+        if (sit || walk || near) out.push({ label: tg.label, emoji: tg.emoji, high: tg.high, sit: sit, walk: walk, near: near, dist: dist });
+    });
+
+    out.sort(function(a, b) { return (b.high ? 1 : 0) - (a.high ? 1 : 0) || a.dist - b.dist; });
+
+    return out;
+}
+
+function scentRiskText(r) {
+    const parts = [];
+    if (r.near) parts.push("your walk passes within 40 m");
+    if (r.walk) parts.push("walk-in scent blows over it");
+    if (r.sit) parts.push("sitting scent blows over it");
+    return r.emoji + " " + r.label + " (" + parts.join(", ") + ")";
+}
+
+// ---- Buck alerts ----
+// Named bucks with at least 3 sightings who haven't been seen for 'days' days
+function missingBucks(bucks, cameras, days) {
+
+    const out = [];
+
+    bucks.forEach(function(b) {
+        const st = buckStats(b, cameras);
+        if (st.rows.length < 3) return;
+        const age = daysSince(st.last);
+        if (age !== null && age >= days) out.push({ buck: b, age: age, last: st.last });
+    });
+
+    return out;
+}
+
+// ---- Alerts (notifications) ----
+const NOTIFY_KEY = "deerNotify";
+const NOTIFY_STATE_KEY = "deerNotifyState";
+
+function getNotifyPrefs() {
+    try {
+        return { on: 0, newBuck: 1, tomorrow: 1, ...(JSON.parse(localStorage.getItem(NOTIFY_KEY)) || {}) };
+    } catch {
+        return { on: 0, newBuck: 1, tomorrow: 1 };
+    }
+}
+
+function pushNotice(title, body, tag) {
+
+    try {
+        if (typeof navigator !== "undefined" && navigator.serviceWorker && navigator.serviceWorker.ready) {
+            navigator.serviceWorker.ready.then(function(reg) {
+                return reg.showNotification(title, { body: body, tag: tag, icon: "icon-192.png", badge: "icon-192.png" });
+            }).catch(function() {
+                try { new Notification(title, { body: body, tag: tag }); } catch (error) {}
+            });
+            return;
+        }
+        new Notification(title, { body: body, tag: tag });
+    } catch (error) {}
+}
+
+// Looks for new buck photos and tomorrow's best sit, and sends alerts for them (once each).
+// 'sendTest' only makes the first-time baseline; returns a list of {title, body} that were sent.
+function runAlertCheck(data, prefs, state, hourNow) {
+
+    const sent = [];
+    const seen = new Set(state.seen || []);
+    const fresh = [];
+
+    data.cameras.forEach(function(c) {
+        c.sightings.forEach(function(sg) {
+            if (!isBuckType(sg.deerType) || sg.id === undefined) return;
+            const key = c.id + ":" + sg.id;
+            if (!seen.has(key)) { seen.add(key); fresh.push({ c: c, sg: sg }); }
+        });
+    });
+
+    if (state.baselined && prefs.newBuck && fresh.length) {
+
+        const first = fresh[0];
+        const named = data.bucks.find(function(b) { return first.sg.buckId !== undefined && String(b.id) === String(first.sg.buckId); });
+
+        sent.push({
+            title: fresh.length === 1 ? "New buck photo" : fresh.length + " new buck photos",
+            body: (named ? named.name + " at " : "") + first.c.name + (first.sg.time ? " · " + first.sg.time : "") + (fresh.length > 1 ? " and " + (fresh.length - 1) + " more" : ""),
+            tag: "deer-buck"
+        });
+    }
+
+    state.seen = Array.from(seen).slice(-1500);
+    state.baselined = true;
+
+    if (prefs.tomorrow && hourNow >= 16 && data.forecast && data.stands.length) {
+
+        const tmr = addDaysToDate(todayString(), 1);
+
+        if (state.tomorrowFor !== tmr) {
+
+            const plan = planSits(data.stands, data.cameras, data.trails, data.forecast, tmr, null);
+            const morning = plan[0];
+
+            if (morning && morning.rows[0] && morning.rows[0].total > 0) {
+
+                state.tomorrowFor = tmr;
+
+                const best = morning.rows[0];
+
+                if (best.okHours > 0 && best.value > 0) {
+                    sent.push({ title: "Tomorrow morning: " + best.stand.name, body: "Best stand for the morning sit. " + morning.windText, tag: "deer-tomorrow" });
+                }
+            }
+        }
+    }
+
+    return sent;
+}
+
+// ---- Shared snapshot (read-only copy of your map, stands, bucks and sightings, without photos) ----
+function b64urlEncode(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64urlDecode(text) {
+    const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+}
+
+function buildSnapshot(cameras, stands, trails, features, bucks) {
+    return {
+        app: "deer-snapshot",
+        v: 1,
+        when: new Date().toISOString(),
+        cameras: cameras.map(function(c) {
+            return { ...c, sightings: c.sightings.map(function(sg) { const copy = { ...sg }; delete copy.thumb; return copy; }) };
+        }),
+        stands: stands, trails: trails, features: features, bucks: bucks
+    };
+}
+
+async function encodeSnapshot(obj) {
+
+    const json = JSON.stringify(obj);
+
+    if (typeof CompressionStream !== "undefined") {
+        const stream = new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"));
+        return "g." + b64urlEncode(new Uint8Array(await new Response(stream).arrayBuffer()));
+    }
+
+    return "j." + b64urlEncode(new TextEncoder().encode(json));
+}
+
+async function decodeSnapshot(text) {
+
+    const kind = text.slice(0, 2);
+    const bytes = b64urlDecode(text.slice(2));
+
+    if (kind === "g.") {
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        return JSON.parse(await new Response(stream).text());
+    }
+
+    return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+// A small sketch of where a buck has been seen: bigger dot = more sightings. Grey dots are your other cameras.
+function buckMiniMap(st, cameras) {
+
+    const mine = {};
+    st.rows.forEach(function(r) { mine[String(r.camera.id)] = (mine[String(r.camera.id)] || 0) + 1; });
+
+    if (!cameras.length || !Object.keys(mine).length) return null;
+
+    const W = 300, H = 170, pad = 22;
+    const lats = cameras.map(function(c) { return c.lat; }), lngs = cameras.map(function(c) { return c.lng; });
+    const minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    const minLng = Math.min.apply(null, lngs), maxLng = Math.max.apply(null, lngs);
+    const k = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
+    const spanX = Math.max((maxLng - minLng) * k, 1e-6), spanY = Math.max(maxLat - minLat, 1e-6);
+    const scale = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+    const offX = (W - spanX * scale) / 2, offY = (H - spanY * scale) / 2;
+    const maxCount = Math.max.apply(null, Object.keys(mine).map(function(key) { return mine[key]; }));
+
+    function px(c) { return offX + (c.lng - minLng) * k * scale; }
+    function py(c) { return offY + (maxLat - c.lat) * scale; }
+
+    const kids = [e("rect", { key: "bg", x: 0, y: 0, width: W, height: H, rx: 8, fill: "#f2f2ee", stroke: "#ddd" })];
+
+    cameras.forEach(function(c) {
+        if (mine[String(c.id)]) return;
+        kids.push(e("circle", { key: "o" + c.id, cx: px(c), cy: py(c), r: 4, fill: "#b8b8b8" }));
+    });
+
+    cameras.forEach(function(c) {
+        const n = mine[String(c.id)];
+        if (!n) return;
+        kids.push(e("circle", { key: "m" + c.id, cx: px(c), cy: py(c), r: 6 + 10 * n / maxCount, fill: "#7b1e1e", fillOpacity: 0.75, stroke: "#fff", strokeWidth: 1.5 },
+            e("title", null, c.name + ": " + n)));
+        kids.push(e("text", { key: "t" + c.id, x: px(c), y: py(c) - 10 - 10 * n / maxCount, textAnchor: "middle", fontSize: 10, fill: "#333" }, c.name));
+    });
+
+    return e("svg", { viewBox: "0 0 " + W + " " + H, style: { width: "100%", maxWidth: "420px", display: "block" } }, kids);
+}
+
 // ---- Rut tracker: deer seen per week of the season, one line per season ----
 // Week 0 starts on 1 August. 'sightings' is a flat list of sightings; onlyBucks counts bucks only.
 function rutWeekly(sightings, onlyBucks) {
@@ -4543,6 +4803,16 @@ function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, on
                             e("strong", { style: { cursor: "pointer", textDecoration: "underline" }, onClick: function() { onOpenStand(best.stand); } }, best.stand.name),
                             best.value > 0 ? " · score " + fmtScore(best.value) : " · wind is fine, but no scored activity yet"
                         ),
+                    (function() {
+                        if (!hasWind || !best.total || !extras.features) return null;
+                        const w = forecastWindFrom(forecast, date, sit.window[0], sit.window[1]);
+                        if (!w) return null;
+                        const risks = scentRisks(best.stand, cameras, extras.features, w.dir, extras.range || 250);
+                        return risks.length
+                            ? e("div", { style: { marginBottom: "8px", fontSize: "13px", color: "#c0392b" } },
+                                "⚠ Scent: " + risks.slice(0, 3).map(scentRiskText).join("; "))
+                            : null;
+                    })(),
                     sit.rows.map(function(r) {
                         return e(
                             "div",
@@ -5116,6 +5386,11 @@ function App() {
     const [histWx, setHistWx] = useState(getSavedHist);  // weather history used for weather learning
     const [chartSeason, setChartSeason] = useState("all");  // Charts tab season filter
     const [rutBucksOnly, setRutBucksOnly] = useState(true);  // rut tracker counts bucks only?
+    const [entryDraft, setEntryDraft] = useState(null);  // id of the stand whose walk-in start point is being placed
+    const [readOnly, setReadOnly] = useState(false);  // true while viewing someone else's shared snapshot
+    const [notify, setNotify] = useState(getNotifyPrefs);  // alert preferences
+    const [shareStatus, setShareStatus] = useState("");  // message under the Share buttons
+    const [shareLink, setShareLink] = useState("");  // the link just made (shown so it can be copied by hand)
     const [scentOn, setScentOn] = useState(false);  // draw the scent cone for the selected stand?
     const [scentWind, setScentWind] = useState("now");  // which wind: now / am / pm (forecast) or a compass code
     const [scentRange, setScentRange] = useState(250);  // how far the scent cone reaches, in meters
@@ -5181,6 +5456,10 @@ function App() {
     const standMarkersRef = useRef({});  // stand id -> its triangle on the map
     const standDraftRef = useRef(null);  // copy of standDraft for the map click handler
     const featureDraftRef = useRef(null);  // copy of featureDraft for map click handlers
+    const entryDraftRef = useRef(null);  // copy of entryDraft for the map click handler
+    const readOnlyRef = useRef(false);  // true while a shared snapshot is open: nothing is saved or synced
+    const entryLayerRef = useRef(null);  // the walk-in line drawn on the map
+    const alertDataRef = useRef(null);  // newest data for the alert checker
     const showTrailsRef = useRef(true);  // copy of showTrails for drawing trails
     const showStandsRef = useRef(true);  // copy of showStands
     const heatLayerRef = useRef(null);  // the heat map layer
@@ -5192,6 +5471,8 @@ function App() {
     // Keep the ref copies up to date on every redraw
     standDraftRef.current = standDraft;
     featureDraftRef.current = featureDraft;
+    entryDraftRef.current = entryDraft;
+    alertDataRef.current = { cameras: cameras, stands: stands, trails: trails, forecast: forecast, bucks: bucks };
     showTrailsRef.current = showTrails;
     showStandsRef.current = showStands;
 
@@ -5385,7 +5666,7 @@ function App() {
     async function syncFromDrive() {
 
         // Don't run two syncs at once, and do nothing when not signed in
-        if (syncBusyRef.current || !driveAccessToken) return;
+        if (syncBusyRef.current || !driveAccessToken || readOnlyRef.current) return;
 
         syncBusyRef.current = true;
 
@@ -5597,6 +5878,9 @@ function App() {
     // SAVE + SYNC: whenever cameras, trails or stands change, save them on this device,
     // stamp the edit time, and (if connected to Drive) sync 2 seconds later
     useEffect(function() {
+
+        // viewing a shared snapshot: never save or sync it
+        if (readOnlyRef.current) return;
 
         setStorageFull(!saveData(cameras, trails, stands, bucks, hunts, features));
 
@@ -5937,6 +6221,22 @@ function App() {
                 standDraftRef.current = null;
                 setStandDraft(null);
                 setSelectedStandId(stand.id);
+
+                return;
+            }
+
+            // Setting where you start your walk in to a stand
+            if (entryDraftRef.current) {
+
+                const standId = entryDraftRef.current;
+                const at = event.latlng;
+
+                setStands(function(previous) {
+                    return previous.map(function(st) { return st.id === standId ? { ...st, entryLat: at.lat, entryLng: at.lng } : st; });
+                });
+
+                entryDraftRef.current = null;
+                setEntryDraft(null);
 
                 return;
             }
@@ -6763,6 +7063,81 @@ function App() {
         }).addTo(map);
 
     }, [selectedStandId, stands, scentOn, scentWind, scentRange, forecast, mapVersion]);
+
+    // WALK-IN LINE: dashed line from the entry point to the open stand
+    useEffect(function() {
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        if (entryLayerRef.current) {
+            try { map.removeLayer(entryLayerRef.current); } catch (error) {}
+            entryLayerRef.current = null;
+        }
+
+        if (!selectedStand || !Number.isFinite(selectedStand.entryLat) || !Number.isFinite(selectedStand.entryLng)) return;
+
+        const group = L.layerGroup([
+            L.polyline([[selectedStand.entryLat, selectedStand.entryLng], [selectedStand.lat, selectedStand.lng]], { color: "#1f4d2b", weight: 3, dashArray: "6 8", interactive: false }),
+            L.circleMarker([selectedStand.entryLat, selectedStand.entryLng], { radius: 7, color: "#fff", weight: 2, fillColor: "#1f4d2b", fillOpacity: 1, interactive: false })
+        ]).addTo(map);
+
+        entryLayerRef.current = group;
+
+    }, [selectedStandId, stands, mapVersion]);
+
+    // ALERTS: new buck photos and tomorrow's best sit, checked when the app opens, comes back to the front, and every 15 minutes
+    useEffect(function() {
+
+        function check() {
+
+            if (readOnlyRef.current || typeof Notification === "undefined") return;
+
+            const prefs = getNotifyPrefs();
+
+            if (!prefs.on || Notification.permission !== "granted" || !alertDataRef.current) return;
+
+            let state = {};
+            try { state = JSON.parse(localStorage.getItem(NOTIFY_STATE_KEY)) || {}; } catch (error) {}
+
+            const sent = runAlertCheck(alertDataRef.current, prefs, state, new Date().getHours());
+
+            try { localStorage.setItem(NOTIFY_STATE_KEY, JSON.stringify(state)); } catch (error) {}
+
+            sent.forEach(function(n) { pushNotice(n.title, n.body, n.tag); });
+        }
+
+        function onVisible() { if (document.visibilityState === "visible") check(); }
+
+        const first = setTimeout(check, 4000);
+        const interval = setInterval(check, 15 * 60000);
+        document.addEventListener("visibilitychange", onVisible);
+
+        return function() {
+            clearTimeout(first);
+            clearInterval(interval);
+            document.removeEventListener("visibilitychange", onVisible);
+        };
+
+    }, []);
+
+    // SHARED SNAPSHOT: a link ending in #view=... opens a read-only copy
+    useEffect(function() {
+
+        const match = (typeof location !== "undefined" ? location.hash : "").match(/^#view=(.+)$/);
+
+        if (!match) return;
+
+        (async function() {
+            try {
+                applySnapshot(await decodeSnapshot(match[1]));
+            } catch (error) {
+                setShareStatus("That shared link couldn't be opened (" + (error && error.message ? error.message : "damaged link") + ").");
+            }
+        })();
+
+    }, []);
 
     // THEME: apply and save the colour choices
     useEffect(function() {
@@ -9183,6 +9558,10 @@ function App() {
         setFeatureDraft(type);
     }
 
+    function updateStand(id, patch) {
+        setStands(function(previous) { return previous.map(function(st) { return st.id === id ? { ...st, ...patch } : st; }); });
+    }
+
     function updateFeature(id, patch) {
         setFeatures(function(previous) { return previous.map(function(f) { return f.id === id ? { ...f, ...patch } : f; }); });
     }
@@ -9201,6 +9580,110 @@ function App() {
         setShowFeatures(true);
         setView("map");
         setTimeout(function() { if (mapRef.current) mapRef.current.setView([f.lat, f.lng], 17); }, 150);
+    }
+
+    // ---- SHARING: read-only snapshots ----
+    function applySnapshot(data) {
+
+        if (!data || data.app !== "deer-snapshot") throw new Error("not a Deer Trail Cam snapshot");
+
+        // stop all saving and syncing BEFORE the data goes in
+        readOnlyRef.current = true;
+        setReadOnly(true);
+
+        setCameras((Array.isArray(data.cameras) ? data.cameras : []).map(function(camera) {
+            return {
+                id: camera.id || Date.now() + Math.random(),
+                name: camera.name || "Camera",
+                lat: Number(camera.lat),
+                lng: wrapLng(camera.lng),
+                sightings: Array.isArray(camera.sightings) ? camera.sightings : [],
+                facing: camera.facing || "",
+                emailMatch: camera.emailMatch || "",
+                lastChecked: camera.lastChecked || ""
+            };
+        }).filter(function(camera) { return Number.isFinite(camera.lat) && Number.isFinite(camera.lng); }));
+
+        setTrails(Array.isArray(data.trails) ? data.trails : []);
+        setStands(sanitizeStands(data.stands) || []);
+        setFeatures(sanitizeFeatures(data.features));
+        setBucks(sanitizeBucks(data.bucks));
+        setHunts([]);
+    }
+
+    function exitReadOnly() {
+        try { history.replaceState(null, "", location.pathname + location.search); } catch (error) {}
+        location.reload();
+    }
+
+    async function makeShareLink() {
+
+        try {
+            const code = await encodeSnapshot(buildSnapshot(cameras, stands, trails, features, bucks));
+            const url = location.origin + location.pathname + "#view=" + code;
+
+            setShareLink(url);
+
+            let copied = false;
+            try { await navigator.clipboard.writeText(url); copied = true; } catch (error) {}
+
+            setShareStatus((copied ? "Link copied. " : "Copy the link below. ") + "It is " + Math.round(url.length / 1000) + "K long" +
+                (url.length > 8000 ? "; long links can get cut off in text messages, so the file below is safer." : "."));
+        } catch (error) {
+            setShareStatus("Couldn't make the link (" + (error && error.message ? error.message : "error") + ").");
+        }
+    }
+
+    function downloadSnapshotFile() {
+
+        const text = JSON.stringify(buildSnapshot(cameras, stands, trails, features, bucks));
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+        a.download = "deer-snapshot-" + todayString() + ".json";
+        a.click();
+
+        setShareStatus("Snapshot file saved. Your partner opens the app, goes to Settings, and chooses \"Open a shared snapshot\".");
+    }
+
+    function openSnapshotFile(file) {
+
+        if (!file) return;
+
+        const reader = new FileReader();
+
+        reader.onload = function() {
+            try {
+                applySnapshot(JSON.parse(reader.result));
+                setView("map");
+            } catch (error) {
+                setShareStatus("That file isn't a Deer Trail Cam snapshot.");
+            }
+        };
+
+        reader.readAsText(file);
+    }
+
+    function setNotifyPref(key, value) {
+        const next = { ...notify, [key]: value };
+        setNotify(next);
+        try { localStorage.setItem(NOTIFY_KEY, JSON.stringify(next)); } catch (error) {}
+    }
+
+    async function enableAlerts() {
+
+        if (typeof Notification === "undefined") {
+            setShareStatus("This browser doesn't support notifications. On iPhone, add the app to the Home Screen first.");
+            return;
+        }
+
+        const result = await Notification.requestPermission();
+
+        if (result === "granted") {
+            setNotifyPref("on", 1);
+            pushNotice("Alerts are on", "You'll get a note for new buck photos and tomorrow's best sit while the app is open or running in the background.", "deer-test");
+        } else {
+            setNotifyPref("on", 0);
+        }
     }
 
     // The wind direction (degrees it blows FROM) the scent cone should use, or null if there's no data
@@ -9294,9 +9777,42 @@ function App() {
 
         const camsInCone = from === null ? [] : cameras.filter(function(c) { return inScentCone(stand, c.lat, c.lng, from, scentRange); });
 
+        // Walk-in route + scent check (works with the forecast or a wind you pick)
+        const hasEntry = Number.isFinite(stand.entryLat) && Number.isFinite(stand.entryLng);
+        const checkWind = scentWindFrom();
+        const risks = checkWind === null ? null : scentRisks(stand, cameras, features, checkWind, scentRange);
+        const walkLen = hasEntry ? Math.round(metersBetween(stand.entryLat, stand.entryLng, stand.lat, stand.lng)) : 0;
+
         return e(
             React.Fragment,
             null,
+
+            e(
+                "div",
+                { className: "card" },
+                e("h3", null, "Walk-in route"),
+                e("p", { className: "empty", style: { marginTop: 0 } }, "Mark where you start walking in. The app checks whether your scent, on the way in and while sitting, blows over bedding, food, water, sign or cameras with recent deer."),
+                entryDraft === stand.id
+                    ? e("div", { className: "drawing" }, "Tap the map where your walk starts.",
+                        e("div", null, e("button", { className: "cancel-button", style: { marginTop: "6px" }, onClick: function() { entryDraftRef.current = null; setEntryDraft(null); } }, "Cancel")))
+                    : e("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
+                        e("button", { className: "secondary", onClick: function() { entryDraftRef.current = stand.id; setEntryDraft(stand.id); } }, hasEntry ? "Move start point" : "Set start point"),
+                        hasEntry ? e("button", { className: "secondary", onClick: function() { updateStand(stand.id, { entryLat: null, entryLng: null }); } }, "Clear") : null),
+                hasEntry ? e("p", { style: { margin: "0 0 6px", fontSize: "14px" } }, "Walk of about " + walkLen + " m, bearing " + windCode(bearingBetween(stand.entryLat, stand.entryLng, stand.lat, stand.lng)) + ".") : null,
+                e("div", { className: "form-group" }, e("label", null, "Check against wind"),
+                    e("select", { value: scentWind, onChange: function(ev) { setScentWind(ev.target.value); } },
+                        e("option", { value: "now" }, "Forecast: right now"),
+                        e("option", { value: "am" }, "Forecast: morning sit"),
+                        e("option", { value: "pm" }, "Forecast: evening sit"),
+                        WIND_CODES.map(function(c) { return e("option", { key: c, value: c }, "Wind from " + c); }))),
+                risks === null
+                    ? e("p", { className: "empty", style: { margin: 0 } }, "No forecast for that time. Open the Hunt tab to load one, or pick a wind direction.")
+                    : risks.length
+                        ? e("div", null,
+                            e("div", { style: { fontWeight: 600, color: "#c0392b" } }, "⚠ With a " + windCode(checkWind) + " wind:"),
+                            risks.slice(0, 8).map(function(r, i) { return e("div", { key: i, style: { fontSize: "14px", padding: "2px 0" } }, scentRiskText(r)); }))
+                        : e("p", { style: { margin: 0, fontSize: "14px" } }, "✅ With a " + windCode(checkWind) + " wind, your scent doesn't reach anything marked within " + scentRange + " m.")
+            ),
 
             e(
                 "div",
@@ -9498,6 +10014,85 @@ function App() {
     }
 
     // ---- HUNT TAB: best-stand planner, then the hunt log ----
+    // ---- DAILY BRIEFING: the Hunt tab's "what should I do today" card ----
+    function briefingView() {
+
+        const today = todayString();
+        const center = propertyCenter(cameras, stands);
+        const sun = center ? sunTimes(center.lat, center.lng, today) : null;
+        const moon = moonInfo(today, "12:00");
+        const model = SCORE_CONFIG.weatherAdjust && histWx ? learnWeatherFactors(cameras, histWx) : null;
+        const plan = forecast && stands.length ? planSits(stands, cameras, trails, forecast, today, model) : null;
+        const nowHour = new Date().getHours();
+
+        function clock(h) { return (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? " AM" : " PM"); }
+
+        // deer in the last 48 hours
+        const cutoff = Date.now() - 48 * 3600000;
+        const recent = [];
+
+        cameras.forEach(function(camera) {
+            camera.sightings.forEach(function(sg) {
+                const t = sightingTime(sg);
+                if (t !== null && t >= cutoff && t <= Date.now() + 3600000) recent.push({ camera: camera, sg: sg, t: t });
+            });
+        });
+
+        recent.sort(function(a, b) { return b.t - a.t; });
+
+        const recentBucks = recent.filter(function(r) { return isBuckType(r.sg.deerType); });
+        const deerCount = recent.reduce(function(a, r) { return a + Number(r.sg.number || 1); }, 0);
+        const issues = maintenanceIssues(cameras, maintenance);
+        const missing = missingBucks(bucks, cameras, SCORE_CONFIG.buckAlertDays);
+
+        function buckLabel(r) {
+            const named = bucks.find(function(b) { return r.sg.buckId !== undefined && String(b.id) === String(r.sg.buckId); });
+            return (named ? named.name : r.sg.deerType) + " · " + r.camera.name + " · " + r.sg.date.slice(5) + (r.sg.time ? " " + r.sg.time : "");
+        }
+
+        const lines = [];
+
+        lines.push(e("p", { key: "sky", style: { margin: "0 0 8px", fontSize: "14px" } },
+            (moon ? moon.emoji + " " + moon.name + " (" + Math.round(moon.illum) + "%)" : "") +
+            (sun ? " · ☀ " + clockText(sun.rise) + " - " + clockText(sun.set) + " · shooting light " + clockText(sun.legalStart) + " - " + clockText(sun.legalEnd) : "")));
+
+        if (!stands.length) {
+            lines.push(e("p", { key: "ns", className: "empty" }, "Add stands on the Map tab to get a best-stand pick."));
+        } else if (!plan) {
+            lines.push(e("p", { key: "nf", className: "empty" }, "No forecast yet. Open \"Best stand\" below and tap Refresh forecast."));
+        } else {
+            plan.forEach(function(sit, i) {
+
+                const over = sit.window[1] <= nowHour;
+                const best = sit.rows[0];
+                const ok = best && best.okHours > 0 && best.value > 0;
+                const w = forecastWindFrom(forecast, today, sit.window[0], sit.window[1]);
+                const risks = ok && w ? scentRisks(best.stand, cameras, features, w.dir, scentRange) : [];
+
+                lines.push(e("div", { key: "s" + i, style: { padding: "6px 0", opacity: over ? 0.5 : 1, borderTop: "1px solid var(--line, #e3e3e3)" } },
+                    e("div", { style: { fontWeight: 600 } }, (sit.window[0] < 12 ? "Morning" : "Evening") + " " + clock(sit.window[0]) + " - " + clock(sit.window[1]) + (over ? " (over)" : "")),
+                    e("div", { style: { fontSize: "14px" } },
+                        ok ? e("span", null, "Best: ", e("strong", { style: { cursor: "pointer", textDecoration: "underline" }, onClick: function() { openStand(best.stand); } }, best.stand.name), " · score " + fmtScore(best.value) + " · " + sit.windText)
+                           : "No stand with a safe wind and scored activity. " + sit.windText),
+                    risks.length ? e("div", { style: { fontSize: "13px", color: "#c0392b" } }, "⚠ Scent: " + risks.slice(0, 3).map(scentRiskText).join("; ")) : null));
+            });
+        }
+
+        lines.push(e("div", { key: "rec", style: { padding: "6px 0", borderTop: "1px solid var(--line, #e3e3e3)" } },
+            e("div", { style: { fontWeight: 600 } }, "Last 48 hours"),
+            e("div", { style: { fontSize: "14px" } }, recent.length ? deerCount + " deer in " + recent.length + " sighting" + (recent.length === 1 ? "" : "s") + ", " + recentBucks.length + " buck" + (recentBucks.length === 1 ? "" : "s") + "." : "No sightings in the last 48 hours."),
+            recentBucks.slice(0, 5).map(function(r, i) { return e("div", { key: i, style: { fontSize: "13px" } }, "🦌 " + buckLabel(r)); })));
+
+        if (missing.length || issues.length) {
+            lines.push(e("div", { key: "al", style: { padding: "6px 0", borderTop: "1px solid var(--line, #e3e3e3)" } },
+                e("div", { style: { fontWeight: 600 } }, "Heads up"),
+                missing.map(function(m) { return e("div", { key: "m" + m.buck.id, style: { fontSize: "14px" } }, "⚠ " + m.buck.name + " not seen in " + m.age + " days"); }),
+                issues.slice(0, 4).map(function(i) { return e("div", { key: "i" + i.camera.id, style: { fontSize: "14px" } }, "⚠ " + i.camera.name + " — " + i.problems.join("; ")); })));
+        }
+
+        return e("div", null, lines);
+    }
+
     function huntPage() {
 
         return e(
@@ -9512,9 +10107,16 @@ function App() {
                     { className: "dashboard-grid" },
                     e(
                         Collapsible,
+                        { id: "hunt-briefing", title: "Today's briefing", className: "dashboard-card wide" },
+                        briefingView()
+                    ),
+                    e(
+                        Collapsible,
                         { id: "hunt-planner", title: "Best stand (wind + scores)", className: "dashboard-card wide" },
                         huntPlannerView(stands, cameras, trails, forecast, planDay, setPlanDay, refreshForecast, forecastStatus, openStand, {
                             center: propertyCenter(cameras, stands),
+                            features: features,
+                            range: scentRange,
                             adjustOn: !!SCORE_CONFIG.weatherAdjust,
                             model: SCORE_CONFIG.weatherAdjust ? (histWx ? learnWeatherFactors(cameras, histWx) : { ready: false, reason: "Loading weather history…", bins: {}, deer: 0, days: 0 }) : null
                         })
@@ -10013,6 +10615,13 @@ function App() {
                 { className: "dashboard-inner" },
                 e("div", { className: "dashboard-title" }, e("h2", null, "Bucks"),
                     e("p", { className: "empty" }, "Name individual bucks and tag sightings to them (when adding a sighting, or with the dropdown on any sighting). " + untagged + " buck sighting" + (untagged === 1 ? "" : "s") + " not tagged yet.")),
+                (function() {
+                    const missing = missingBucks(bucks, cameras, SCORE_CONFIG.buckAlertDays);
+                    return missing.length
+                        ? e("div", { className: "drawing", style: { borderColor: "#c0392b", marginBottom: "12px" } },
+                            missing.map(function(m) { return e("div", { key: m.buck.id }, "⚠ " + m.buck.name + " hasn't been seen in " + m.age + " days (last " + m.last + ")"); }))
+                        : null;
+                })(),
                 e("button", { className: "primary", onClick: addBuck, style: { marginBottom: "16px" } }, "+ New buck"),
                 bucks.length
                     ? e(
@@ -10025,7 +10634,7 @@ function App() {
 
                             return e(
                                 Collapsible,
-                                { key: buck.id, id: "buck-" + buck.id, title: buck.name + " · " + st.rows.length + " sighting" + (st.rows.length === 1 ? "" : "s"), className: "dashboard-card wide" },
+                                { key: buck.id, id: "buck-" + buck.id, title: buck.name + " · " + st.rows.length + " sighting" + (st.rows.length === 1 ? "" : "s") + (st.last ? " · last seen " + (daysSince(st.last) === 0 ? "today" : daysSince(st.last) + "d ago") : ""), className: "dashboard-card wide" },
                                 e("div", { style: { display: "flex", gap: "8px", marginBottom: "10px" } },
                                     e("button", { className: "secondary", onClick: function() { renameBuck(buck); } }, "Rename"),
                                     e("button", { className: "danger", onClick: function() { deleteBuck(buck); } }, "Delete")),
@@ -10047,6 +10656,20 @@ function App() {
                                         e("div", { style: { fontWeight: 600, margin: "8px 0 4px" } }, "When he moves (deer by hour)"),
                                         columnChart(st.hours.map(function(v, h) { return { label: hourShort(h), value: v, title: hourLabel(h) + ": " + v }; }), "#7b1e1e", 3),
                                         e("div", { style: { fontWeight: 600, margin: "8px 0 4px" } }, "Where he's been seen"),
+                                        buckMiniMap(st, cameras),
+                                        (function() {
+                                            // stands that have one of his top cameras connected
+                                            const topIds = {};
+                                            st.rows.forEach(function(r) { topIds[String(r.camera.id)] = (topIds[String(r.camera.id)] || 0) + 1; });
+                                            const near = stands.map(function(sd) {
+                                                const hits = (sd.cameraIds || []).reduce(function(a, id) { return a + (topIds[String(id)] || 0); }, 0);
+                                                return { sd: sd, hits: hits };
+                                            }).filter(function(r) { return r.hits > 0; }).sort(function(a, b) { return b.hits - a.hits; }).slice(0, 3);
+                                            const top = st.hours.indexOf(Math.max.apply(null, st.hours));
+                                            return e("div", { style: { fontSize: "14px", margin: "6px 0" } },
+                                                st.rows.length >= 2 && Math.max.apply(null, st.hours) > 0 ? "Usually moves around " + hourLabel(top) + ". " : "",
+                                                near.length ? "Stands covering his cameras: " + near.map(function(r) { return r.sd.name + " (" + r.hits + ")"; }).join(", ") + "." : "No stand has his cameras connected yet.");
+                                        })(),
                                         st.cameras.map(function(c) {
                                             return e("div", { key: c.name, style: { display: "flex", justifyContent: "space-between", fontSize: "14px" } }, e("span", null, c.name), e("strong", null, c.count));
                                         }),
@@ -10191,7 +10814,41 @@ function App() {
                     ),
                     field("Weather learning caution (hours)", sc, "weatherPriorHours", "Higher = needs more data before the weather moves a score.", 5),
                     field("History needed first (days)", sc, "weatherMinDays", "Weather adjustment stays off until you have this many days of sightings.", 1),
+                    field("Buck missing alert (days)", sc, "buckAlertDays", "A named buck with 3+ sightings not seen for this long shows an alert on the Bucks and Hunt tabs.", 1),
                     e("p", { className: "empty", style: { marginBottom: 0 } }, "Off by default. It compares how many deer you saw per hour under each weather condition (pressure trend, temperature, wind) in your prime hours, then nudges the Hunt tab's scores. Needs a connection to download past weather.")
+                ),
+
+                e(
+                    "div",
+                    { className: "dashboard-card", style: { marginBottom: "20px" } },
+                    e("h3", null, "Alerts"),
+                    e("p", { className: "empty", style: { marginTop: 0 } }, "Get a notification for a new buck photo (after a Gmail import or an added sighting) and, after 4 PM, for tomorrow morning's best stand. This app has no server, so alerts are only checked while the app is open or running in the background on your phone, not when it is fully closed. On iPhone the app must be added to the Home Screen first."),
+                    typeof Notification === "undefined"
+                        ? e("p", { className: "empty" }, "This browser doesn't support notifications.")
+                        : e("div", null,
+                            e("button", { className: notify.on && Notification.permission === "granted" ? "secondary" : "primary", onClick: function() { notify.on && Notification.permission === "granted" ? setNotifyPref("on", 0) : enableAlerts(); } },
+                                notify.on && Notification.permission === "granted" ? "Turn alerts off" : "Turn alerts on"),
+                            Notification.permission === "denied" ? e("p", { className: "empty" }, "Notifications are blocked for this site in your browser settings.") : null,
+                            e("label", { style: { display: "flex", alignItems: "center", gap: "10px", padding: "8px 0 0" } },
+                                e("input", { type: "checkbox", checked: !!notify.newBuck, style: { width: "20px", height: "20px", minHeight: 0 }, onChange: function(ev) { setNotifyPref("newBuck", ev.target.checked ? 1 : 0); } }), "New buck photo"),
+                            e("label", { style: { display: "flex", alignItems: "center", gap: "10px", padding: "6px 0" } },
+                                e("input", { type: "checkbox", checked: !!notify.tomorrow, style: { width: "20px", height: "20px", minHeight: 0 }, onChange: function(ev) { setNotifyPref("tomorrow", ev.target.checked ? 1 : 0); } }), "Tomorrow morning's best stand"))
+                ),
+
+                e(
+                    "div",
+                    { className: "dashboard-card", style: { marginBottom: "20px" } },
+                    e("h3", null, "Share with a hunting partner"),
+                    e("p", { className: "empty", style: { marginTop: 0 } }, "Makes a read-only copy of your cameras, sightings, stands, trails, bucks and map markers. Photos and your hunt log are left out. Anyone with the link or file can see where your stands and cameras are, so only send it to people you trust. It is a snapshot from right now; it doesn't update."),
+                    e("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
+                        e("button", { className: "primary", onClick: makeShareLink }, "Copy share link"),
+                        e("button", { className: "secondary", onClick: downloadSnapshotFile }, "Save snapshot file")),
+                    shareLink ? e("textarea", { readOnly: true, value: shareLink, style: { width: "100%", height: "70px", fontSize: "12px" }, onFocus: function(ev) { ev.target.select(); } }) : null,
+                    shareStatus ? e("p", { className: "empty" }, shareStatus) : null,
+                    e("div", { className: "form-group" },
+                        e("label", null, "Open a shared snapshot"),
+                        e("input", { type: "file", accept: ".json,application/json", onChange: function(ev) { openSnapshotFile(ev.target.files[0]); ev.target.value = ""; } }),
+                        e("div", { className: "empty", style: { fontSize: "12px" } }, "Opens it read-only. Nothing is saved or synced until you exit."))
                 ),
 
                 e(
@@ -11823,6 +12480,12 @@ function App() {
         React.Fragment,
         null,
 
+        readOnly
+            ? e("div", { style: { background: "#7b1e1e", color: "#fff", padding: "8px 12px", fontSize: "14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" } },
+                e("span", null, "👁 Viewing a shared snapshot (read-only). Nothing you change is saved."),
+                e("button", { className: "secondary", onClick: exitReadOnly }, "Exit"))
+            : null,
+
         e(
             "header",
             null,
@@ -11831,7 +12494,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v21")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v22")
             ),
 
             e(
