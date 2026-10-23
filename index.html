@@ -948,6 +948,7 @@ const COLORS_KEY = "deerMapColors";  // map color choices
 const STAND_KEY = "deerStands";  // hunting stands
 const BUCK_KEY = "deerBucks";  // named individual bucks
 const HUNT_KEY = "deerHunts";  // hunt log entries
+const FEATURE_KEY = "deerFeatures";  // food plots, water, bedding, scrapes, rubs
 const MAINT_KEY = "deerMaintenance";  // camera maintenance reminder settings
 const LAYERS_KEY = "deerMapLayers";  // which map layers (trails, stands) are switched on
 
@@ -1011,7 +1012,11 @@ const SCORE_CONFIG = {
     primeWindows: [[5, 10], [14, 17]],  // prime hours: 5 AM up to 10 AM, and 2 PM up to 5 PM (24-hour clock)
     primeWeight: 2,             // a sighting in a prime hour is worth this many times its base points (the maximum)
     stepPerHour: 0.35,          // every hour away from a prime window takes this much off the multiplier
-    minWeight: 0.25             // the multiplier never drops below this
+    minWeight: 0.25,            // the multiplier never drops below this
+    legalBufferMinutes: 30,     // legal shooting light = this long before sunrise to this long after sunset (check your state's rules)
+    weatherAdjust: 0,           // 1 = the Hunt planner adjusts hour scores using what your sightings say about weather
+    weatherPriorHours: 40,      // how cautious the weather learning is (higher = needs more data before it moves a score)
+    weatherMinDays: 14          // days of history needed before weather learning is used
 };
 
 // How many hours away an hour of the day is from the nearest prime window (0 = inside a window).
@@ -2990,10 +2995,11 @@ function getLayers() {
         const saved = JSON.parse(localStorage.getItem(LAYERS_KEY)) || {};
         return {
             trails: saved.trails !== false,
-            stands: saved.stands !== false
+            stands: saved.stands !== false,
+            features: saved.features !== false
         };
     } catch {
-        return { trails: true, stands: true };
+        return { trails: true, stands: true, features: true };
     }
 }
 
@@ -3668,12 +3674,13 @@ function getTrails() {
 }
 
 // Saves cameras, trails and stands to this device (called whenever any of them change)
-function saveData(cameras, trails, stands, bucks, hunts) {
+function saveData(cameras, trails, stands, bucks, hunts, features) {
 
     // Quota errors are caught so a full phone never crashes the app; returns false if something couldn't be saved
     try {
         if (bucks) localStorage.setItem(BUCK_KEY, JSON.stringify(bucks));
         if (hunts) localStorage.setItem(HUNT_KEY, JSON.stringify(hunts));
+        if (features) localStorage.setItem(FEATURE_KEY, JSON.stringify(features));
     } catch (error) {
         return false;
     }
@@ -3700,6 +3707,303 @@ function saveData(cameras, trails, stands, bucks, hunts) {
     }
 
     return true;
+}
+
+// Sunrise or sunset as a UTC timestamp (ms) for a calendar date and location.
+// Works out sunrise or sunset for a date and location using the standard 'Almanac for Computers' method.
+// Returns the moment as a UTC timestamp (milliseconds), or null if the sun never rises/sets that day.
+function sunEvent(year, month0, day, lat, lng, isRise) {
+
+    // Multiply degrees by this to get radians
+    const rad = Math.PI / 180;
+
+    // Day number of the year (Jan 1 = 1)
+    const dayOfYear = Math.floor(
+        (Date.UTC(year, month0, day) - Date.UTC(year, 0, 0)) / 86400000
+    );
+
+    // Longitude expressed in hours (the Earth turns 15 degrees per hour)
+    const lngHour = lng / 15;
+    // Approximate time of the event in days
+    const t = dayOfYear + ((isRise ? 6 : 18) - lngHour) / 24;
+    // The sun's mean anomaly (where it is in its orbit)
+    const M = 0.9856 * t - 3.289;
+
+    // The sun's true longitude in the sky
+    let L = M +
+        1.916 * Math.sin(M * rad) +
+        0.020 * Math.sin(2 * M * rad) +
+        282.634;
+
+    L = ((L % 360) + 360) % 360;
+
+    // Right ascension, then fixed to be in the same quadrant as L and converted to hours
+    let RA = Math.atan(0.91764 * Math.tan(L * rad)) / rad;
+    RA = ((RA % 360) + 360) % 360;
+    RA += Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90;
+    RA = RA / 15;
+
+    // The sun's declination (how far north/south of the equator it is)
+    const sinDec = 0.39782 * Math.sin(L * rad);
+    const cosDec = Math.cos(Math.asin(sinDec));
+
+    // Cosine of the sun's hour angle for sunrise/sunset (90.833 degrees accounts for atmosphere)
+    const cosH =
+        (Math.cos(90.833 * rad) - sinDec * Math.sin(lat * rad)) /
+        (cosDec * Math.cos(lat * rad));
+
+    // Sun never rises or never sets on this day at this latitude
+    if (cosH > 1 || cosH < -1) return null;
+
+    // Hour angle: use the morning side for sunrise, the evening side for sunset, then convert to hours
+    let H = isRise
+        ? 360 - Math.acos(cosH) / rad
+        : Math.acos(cosH) / rad;
+
+    H = H / 15;
+
+    // Local mean time of the event, kept between 0 and 24 hours
+    let T = H + RA - 0.06571 * t - 6.622;
+    T = ((T % 24) + 24) % 24;
+
+    // Convert local mean time to UTC and return it as a timestamp
+    return Date.UTC(year, month0, day) + (T - lngHour) * 3600000;
+}
+
+
+// Sunrise, sunset and legal shooting light for a date (YYYY-MM-DD) at a spot; null if the sun doesn't rise/set
+function sunTimes(lat, lng, dateString) {
+
+    const p = dateString.split("-").map(Number);
+    const rise = sunEvent(p[0], p[1] - 1, p[2], lat, lng, true);
+    const set = sunEvent(p[0], p[1] - 1, p[2], lat, lng, false);
+
+    if (rise === null || set === null) return null;
+
+    const buffer = SCORE_CONFIG.legalBufferMinutes * 60000;
+
+    return { rise: rise, set: set, legalStart: rise - buffer, legalEnd: set + buffer };
+}
+
+// '6:41 AM' style clock text for a timestamp (in this device's time zone)
+function clockText(timestamp) {
+    return new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+// ---- Seasons: a hunting season runs 1 Aug to 31 Jul, named by the year it starts ----
+function seasonOf(dateString) {
+    if (!dateString) return null;
+    const p = dateString.split("-").map(Number);
+    if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) return null;
+    return p[1] >= 8 ? p[0] : p[0] - 1;
+}
+
+function seasonLabel(year) {
+    return year + "-" + String((year + 1) % 100).padStart(2, "0");
+}
+
+// ---- Map features: food, water, bedding, scrapes, rubs ----
+const FEATURE_TYPES = [
+    { value: "Food plot", emoji: "🌾", color: "#3f9a5b" },
+    { value: "Water", emoji: "💧", color: "#2980b9" },
+    { value: "Bedding", emoji: "🛏", color: "#8e6b3d" },
+    { value: "Scrape", emoji: "⛏", color: "#c0392b" },
+    { value: "Rub", emoji: "🌲", color: "#7b5e2b" },
+    { value: "Other", emoji: "📍", color: "#666666" }
+];
+
+function featureType(name) {
+    return FEATURE_TYPES.find(function(t) { return t.value === name; }) || FEATURE_TYPES[FEATURE_TYPES.length - 1];
+}
+
+// The round emoji badge used for a feature on the map
+function featureIcon(type) {
+
+    const t = featureType(type);
+
+    return L.divIcon({
+        html: '<div style="width:28px;height:28px;border-radius:50%;background:' + t.color + ';border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 1px 4px rgba(0,0,0,.5)">' + t.emoji + '</div>',
+        className: "",
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+    });
+}
+
+function sanitizeFeatures(list) {
+    if (!Array.isArray(list)) return [];
+    return list.filter(function(f) { return f && f.id && Number.isFinite(Number(f.lat)) && Number.isFinite(Number(f.lng)); }).map(function(f) {
+        return { id: f.id, type: f.type || "Other", name: f.name || f.type || "Feature", notes: f.notes || "", lat: Number(f.lat), lng: wrapLng(f.lng) };
+    });
+}
+
+// Compass bearing (0 = north) from one point to another
+function bearingBetween(lat1, lng1, lat2, lng2) {
+    const rad = Math.PI / 180;
+    const dLng = (lng2 - lng1) * rad;
+    const y = Math.sin(dLng) * Math.cos(lat2 * rad);
+    const x = Math.cos(lat1 * rad) * Math.sin(lat2 * rad) - Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos(dLng);
+    return (Math.atan2(y, x) / rad + 360) % 360;
+}
+
+// A spot 'meters' away from a point in the direction of a bearing
+function pointAt(lat, lng, bearing, meters) {
+    const rad = Math.PI / 180;
+    return [
+        lat + meters * Math.cos(bearing * rad) / 111320,
+        lng + meters * Math.sin(bearing * rad) / (111320 * Math.cos(lat * rad))
+    ];
+}
+
+// Average wind (direction it blows FROM, and speed) from the forecast between two hours of a day; null if no data
+function forecastWindFrom(forecast, dateString, h0, h1) {
+
+    if (!forecast) return null;
+
+    const rows = forecast.hours.filter(function(r) {
+        const h = Number(r.time.slice(11, 13));
+        return r.time.slice(0, 10) === dateString && h >= h0 && h < h1 && r.dir !== null;
+    });
+
+    if (!rows.length) return null;
+
+    const x = rows.reduce(function(a, r) { return a + Math.sin(r.dir * Math.PI / 180); }, 0);
+    const y = rows.reduce(function(a, r) { return a + Math.cos(r.dir * Math.PI / 180); }, 0);
+
+    return {
+        dir: (Math.atan2(x, y) * 180 / Math.PI + 360) % 360,
+        speed: rows.reduce(function(a, r) { return a + (r.speed || 0); }, 0) / rows.length
+    };
+}
+
+// The scent cone: from the stand, spreading downwind (the opposite way to where the wind comes from)
+const SCENT_HALF_ANGLE = 25;  // degrees either side of straight downwind
+
+function scentConePolygon(stand, windFrom, range) {
+
+    const center = (windFrom + 180) % 360;
+    const points = [[stand.lat, stand.lng]];
+
+    for (let a = -SCENT_HALF_ANGLE; a <= SCENT_HALF_ANGLE; a += 5) {
+        points.push(pointAt(stand.lat, stand.lng, center + a, range));
+    }
+
+    return points;
+}
+
+// Is a spot inside the scent cone?
+function inScentCone(stand, lat, lng, windFrom, range) {
+
+    const dist = metersBetween(stand.lat, stand.lng, lat, lng);
+
+    if (dist > range) return false;
+
+    const center = (windFrom + 180) % 360;
+    const diff = Math.abs(((bearingBetween(stand.lat, stand.lng, lat, lng) - center + 540) % 360) - 180);
+
+    return diff <= SCENT_HALF_ANGLE;
+}
+
+// ---- Rut tracker: deer seen per week of the season, one line per season ----
+// Week 0 starts on 1 August. 'sightings' is a flat list of sightings; onlyBucks counts bucks only.
+function rutWeekly(sightings, onlyBucks) {
+
+    const bySeason = {};
+
+    sightings.forEach(function(sg) {
+
+        if (!sg.date) return;
+        if (onlyBucks && !isBuckType(sg.deerType)) return;
+
+        const year = seasonOf(sg.date);
+        if (year === null) return;
+
+        const start = new Date(year, 7, 1, 12).getTime();
+        const when = new Date(sg.date + "T12:00:00").getTime();
+        const week = Math.floor((when - start) / (7 * 86400000));
+
+        if (week < 0 || week > 34) return;
+
+        const list = bySeason[year] || (bySeason[year] = new Array(35).fill(0));
+        list[week] += Number(sg.number || 1);
+    });
+
+    return Object.keys(bySeason).map(Number).sort(function(a, b) { return a - b; }).map(function(year) {
+
+        const weeks = bySeason[year];
+        let peak = 0;
+        weeks.forEach(function(v, i) { if (v > weeks[peak]) peak = i; });
+
+        const peakDate = new Date(year, 7, 1 + peak * 7, 12);
+
+        return {
+            year: year,
+            weeks: weeks,
+            total: weeks.reduce(function(a, b) { return a + b; }, 0),
+            peakWeek: weeks[peak] > 0 ? peak : null,
+            peakCount: weeks[peak],
+            peakLabel: weeks[peak] > 0 ? peakDate.toLocaleDateString([], { month: "short", day: "numeric" }) : ""
+        };
+    });
+}
+
+function rutTrackerChart(sightings, onlyBucks) {
+
+    const seasons = rutWeekly(sightings, onlyBucks);
+
+    if (!seasons.length) return chartNote("No dated sightings yet.");
+
+    const palette = ["#9e9e9e", "#2980b9", "#8e44ad", "#c0392b"];
+    const W = chartWidth(), H = 240, L = 34, R = 12, T = 12, B = 30;
+    const plotW = W - L - R, plotH = H - T - B;
+    const n = 35;
+
+    const max = niceMax(Math.max.apply(null, seasons.map(function(sn) { return Math.max.apply(null, sn.weeks); }).concat([1])));
+
+    function xAt(i) { return L + i * plotW / (n - 1); }
+    function yAt(v) { return T + plotH - plotH * v / max; }
+
+    const kids = [];
+
+    for (let g = 0; g <= 4; g++) {
+        const y = T + plotH - plotH * g / 4;
+        kids.push(e("line", { key: "g" + g, x1: L, x2: W - R, y1: y, y2: y, stroke: "#e3e3e3" }));
+        kids.push(e("text", { key: "t" + g, x: L - 5, y: y + 3, textAnchor: "end", fontSize: 10, fill: "#666" }, Math.round(max * g / 4 * 10) / 10));
+    }
+
+    // month labels along the bottom (week 0 = 1 Aug)
+    [["Aug", 0], ["Sep", 4.4], ["Oct", 8.9], ["Nov", 13.1], ["Dec", 17.4], ["Jan", 21.9], ["Feb", 26.3], ["Mar", 30.3]].forEach(function(m) {
+        kids.push(e("text", { key: "m" + m[0], x: xAt(m[1]), y: H - 10, textAnchor: "middle", fontSize: 10, fill: "#666" }, m[0]));
+    });
+
+    seasons.forEach(function(sn, k) {
+
+        const isNewest = k === seasons.length - 1;
+        const color = isNewest ? "#1f4d2b" : palette[k % palette.length];
+        const points = sn.weeks.map(function(v, i) { return xAt(i) + "," + yAt(v); }).join(" ");
+
+        kids.push(e("polyline", { key: "l" + k, points: points, fill: "none", stroke: color, strokeWidth: isNewest ? 3 : 1.8, strokeLinejoin: "round" }));
+
+        if (sn.peakWeek !== null) {
+            kids.push(e("circle", { key: "p" + k, cx: xAt(sn.peakWeek), cy: yAt(sn.peakCount), r: 5, fill: color },
+                e("title", null, seasonLabel(sn.year) + " peak: week of " + sn.peakLabel + " (" + sn.peakCount + ")")));
+        }
+    });
+
+    return e(
+        "div",
+        null,
+        e("svg", { viewBox: "0 0 " + W + " " + H, className: "chart-svg" }, kids),
+        legendRow(seasons.map(function(sn, k) {
+            return { label: seasonLabel(sn.year), color: k === seasons.length - 1 ? "#1f4d2b" : palette[k % palette.length] };
+        })),
+        e("div", { style: { marginTop: "8px", fontSize: "14px" } },
+            seasons.slice().reverse().map(function(sn) {
+                return e("div", { key: sn.year },
+                    seasonLabel(sn.year) + ": " + sn.total + (onlyBucks ? " bucks" : " deer") +
+                    (sn.peakWeek !== null ? " · busiest week of " + sn.peakLabel + " (" + sn.peakCount + ")" : ""));
+            })),
+        e("p", { className: "empty", style: { marginBottom: 0 } }, "Each dot marks that season's busiest week. Compare it across years to see when your deer really move.")
+    );
 }
 
 // ---- Moon, weather and wind helpers ----
@@ -3922,10 +4226,180 @@ async function fetchForecast(lat, lng) {
     return forecast;
 }
 
+// ---- Weather learning (optional): what your sightings say about weather ----
+const HIST_KEY = "deerHistWeather";
+
+function getSavedHist() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(HIST_KEY));
+        return saved && Array.isArray(saved.rows) ? saved : null;
+    } catch {
+        return null;
+    }
+}
+
+// Hourly weather for a date range at a spot (archive for older days, forecast service for recent ones)
+async function fetchRangeWeather(lat, lng, startDate, endDate) {
+
+    const today = todayString();
+    const archiveEnd = addDaysToDate(today, -7);  // the archive runs about a week behind
+    const rows = [];
+
+    async function get(base, from, to) {
+
+        const url = base + "?latitude=" + lat.toFixed(4) + "&longitude=" + lng.toFixed(4) +
+            "&hourly=" + WEATHER_VARS + WEATHER_UNITS + "&start_date=" + from + "&end_date=" + to;
+
+        const response = await fetch(url);
+
+        if (!response.ok) throw await weatherError(response);
+
+        parseHourly(await response.json()).forEach(function(r) { rows.push(r); });
+    }
+
+    if (startDate <= archiveEnd) {
+        await get("https://archive-api.open-meteo.com/v1/archive", startDate, endDate < archiveEnd ? endDate : archiveEnd);
+    }
+
+    const recentStart = startDate > archiveEnd ? startDate : addDaysToDate(archiveEnd, 1);
+
+    if (recentStart <= endDate) {
+        await get("https://api.open-meteo.com/v1/forecast", recentStart, endDate);
+    }
+
+    return rows.filter(function(r) { return r.temp !== null; }).map(function(r) {
+        return [r.time, Math.round(r.temp), Math.round((r.speed || 0) * 10) / 10, Math.round(r.dir || 0), r.pressure !== null ? Math.round(r.pressure * 10) / 10 : null];
+    });
+}
+
+// Which weather 'bins' an hour falls in: pressure trend, temperature band, wind strength
+function conditionBins(temp, speed, pressure, pressureBefore) {
+
+    const bins = {};
+
+    if (pressure !== null && pressure !== undefined && pressureBefore !== null && pressureBefore !== undefined) {
+        const change = pressure - pressureBefore;
+        bins.pressure = change <= -1 ? "Falling" : change >= 1 ? "Rising" : "Steady";
+    }
+
+    if (temp !== null && temp !== undefined) {
+        const t = temp < 20 ? "<20°" : temp >= 70 ? "70°+" : (Math.floor(temp / 10) * 10) + "s";
+        bins.temp = t;
+    }
+
+    if (speed !== null && speed !== undefined) {
+        bins.wind = speed < 5 ? "Calm" : speed < 12 ? "Breezy" : "Windy";
+    }
+
+    return bins;
+}
+
+// Learns how many deer you see per hour under each weather condition, during the prime windows.
+// Each condition gets a factor: 1 = average, 1.3 = 30% more deer than usual, 0.7 = fewer.
+// Conditions with little data are pulled toward 1 (weatherPriorHours controls how strongly).
+function learnWeatherFactors(cameras, hist) {
+
+    const cfg = SCORE_CONFIG;
+    const byKey = {};
+
+    hist.rows.forEach(function(r) { byKey[r[0]] = r; });
+
+    function keyFor(dateString, h) { return dateString + "T" + String(h).padStart(2, "0") + ":00"; }
+
+    function binsAt(dateString, h) {
+        const row = byKey[keyFor(dateString, h)];
+        if (!row) return null;
+        const before = h >= 3 ? byKey[keyFor(dateString, h - 3)] : byKey[keyFor(addDaysToDate(dateString, -1), 24 + h - 3)];
+        return conditionBins(row[1], row[2], row[4], before ? before[4] : null);
+    }
+
+    const hours = [];
+    cfg.primeWindows.forEach(function(w) { for (let h = w[0]; h < w[1]; h++) hours.push(h); });
+
+    // history starts at the first sighting and runs to yesterday
+    let first = null;
+    cameras.forEach(function(c) { c.sightings.forEach(function(sg) { if (sg.date && (first === null || sg.date < first)) first = sg.date; }); });
+
+    const model = { ready: false, days: 0, deer: 0, reason: "", bins: { pressure: {}, temp: {}, wind: {} } };
+
+    if (first === null) { model.reason = "No sightings yet."; return model; }
+
+    const yesterday = addDaysToDate(todayString(), -1);
+    const exposure = { pressure: {}, temp: {}, wind: {} };
+    const deer = { pressure: {}, temp: {}, wind: {} };
+    let totalE = 0, totalC = 0;
+
+    for (let d = first, guard = 0; d <= yesterday && guard < 400; d = addDaysToDate(d, 1), guard++) {
+
+        model.days++;
+
+        hours.forEach(function(h) {
+            const b = binsAt(d, h);
+            if (!b) return;
+            totalE++;
+            Object.keys(b).forEach(function(dim) { exposure[dim][b[dim]] = (exposure[dim][b[dim]] || 0) + 1; });
+        });
+    }
+
+    cameras.forEach(function(camera) {
+        camera.sightings.forEach(function(sg) {
+
+            const h = hourOfSighting(sg);
+
+            if (!sg.date || h === null || hours.indexOf(h) === -1 || sg.date > yesterday) return;
+
+            const b = binsAt(sg.date, h);
+
+            if (!b) return;
+
+            const n = Number(sg.number || 1);
+            totalC += n;
+            Object.keys(b).forEach(function(dim) { deer[dim][b[dim]] = (deer[dim][b[dim]] || 0) + n; });
+        });
+    });
+
+    model.deer = totalC;
+
+    if (model.days < cfg.weatherMinDays) { model.reason = "Needs " + cfg.weatherMinDays + " days of history (have " + model.days + ")."; return model; }
+    if (totalC < 20 || totalE === 0) { model.reason = "Needs at least 20 deer seen in the prime windows (have " + totalC + ")."; return model; }
+
+    const overall = totalC / totalE;
+    const m = cfg.weatherPriorHours;
+
+    Object.keys(exposure).forEach(function(dim) {
+        Object.keys(exposure[dim]).forEach(function(label) {
+            const E = exposure[dim][label];
+            const C = deer[dim][label] || 0;
+            const factor = Math.max(0.5, Math.min(2, (C + m * overall) / ((E + m) * overall)));
+            model.bins[dim][label] = { hours: E, deer: C, factor: factor };
+        });
+    });
+
+    model.ready = true;
+
+    return model;
+}
+
+// The factor to apply to an hour of forecast: average (geometric) of the factors of its conditions
+function weatherFactorFor(model, temp, speed, pressure, pressureBefore) {
+
+    if (!model || !model.ready) return 1;
+
+    const b = conditionBins(temp, speed, pressure, pressureBefore);
+    let product = 1, count = 0;
+
+    Object.keys(b).forEach(function(dim) {
+        const bin = model.bins[dim] && model.bins[dim][b[dim]];
+        if (bin) { product *= bin.factor; count++; }
+    });
+
+    return count ? Math.pow(product, 1 / count) : 1;
+}
+
 // ---- BEST STAND planner ----
 // For one day's forecast, each prime window (morning / evening) gets the stand with the most hour-by-hour score
 // during the hours when the wind is OK for that stand.
-function planSits(stands, cameras, trails, forecast, dateString) {
+function planSits(stands, cameras, trails, forecast, dateString, model) {
 
     const scores = {};
 
@@ -3934,10 +4408,24 @@ function planSits(stands, cameras, trails, forecast, dateString) {
     });
 
     const byHour = {};
+    const byKey = {};
 
     (forecast ? forecast.hours : []).forEach(function(row) {
+        byKey[row.time] = row;
         if (row.time.slice(0, 10) === dateString) byHour[Number(row.time.slice(11, 13))] = row;
     });
+
+    // weather factor for a forecast hour (1 when weather learning is off or not ready)
+    function factorAt(h) {
+
+        const row = byHour[h];
+
+        if (!row || !model || !model.ready) return 1;
+
+        const earlier = h >= 3 ? byKey[dateString + "T" + String(h - 3).padStart(2, "0") + ":00"] : null;
+
+        return weatherFactorFor(model, row.temp, row.speed, row.pressure, earlier ? earlier.pressure : null);
+    }
 
     return SCORE_CONFIG.primeWindows.map(function(w) {
 
@@ -3955,7 +4443,7 @@ function planSits(stands, cameras, trails, forecast, dateString) {
 
                 if (windOkForStand(stand, wx.dir, wx.speed)) {
                     okHours++;
-                    value += scores[stand.id][h] || 0;
+                    value += (scores[stand.id][h] || 0) * factorAt(h);
                 }
             }
 
@@ -3984,7 +4472,9 @@ function planSits(stands, cameras, trails, forecast, dateString) {
 }
 
 // The planner card: pick Today / Tomorrow / the day after, see the best stand for each prime window
-function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, onRefresh, status, onOpenStand) {
+function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, onRefresh, status, onOpenStand, extras) {
+
+    extras = extras || {};
 
     const date = addDaysToDate(todayString(), dayOffset);
 
@@ -3996,7 +4486,8 @@ function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, on
         return e("p", { className: "empty" }, "Add stands on the Map tab (and connect cameras to them) to get a best-stand recommendation.");
     }
 
-    const plan = forecast ? planSits(stands, cameras, trails, forecast, date) : null;
+    const plan = forecast ? planSits(stands, cameras, trails, forecast, date, extras.model) : null;
+    const sun = extras.center ? sunTimes(extras.center.lat, extras.center.lng, date) : null;
 
     return e(
         "div",
@@ -4013,6 +4504,21 @@ function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, on
 
         status ? e("p", { className: "empty", style: { margin: "0 0 8px" } }, status) : null,
 
+        // sunrise, sunset and legal shooting light for the chosen day
+        sun
+            ? e("p", { style: { margin: "0 0 10px", fontSize: "14px" } },
+                "☀ Sunrise " + clockText(sun.rise) + " · Sunset " + clockText(sun.set) + " · Shooting light " + clockText(sun.legalStart) + " - " + clockText(sun.legalEnd) +
+                " (" + SCORE_CONFIG.legalBufferMinutes + " min either side; check your state's rules)")
+            : null,
+
+        // weather learning status
+        extras.adjustOn
+            ? e("p", { className: "empty", style: { margin: "0 0 10px" } },
+                extras.model && extras.model.ready
+                    ? "Weather adjustment is ON: hour scores are nudged up or down using " + extras.model.deer + " deer over " + extras.model.days + " days of your history."
+                    : "Weather adjustment is on but not active yet. " + (extras.model ? extras.model.reason : "Loading weather history…"))
+            : null,
+
         !forecast
             ? e("p", { className: "empty" }, "No forecast yet. Tap Refresh forecast (needs a connection).")
             : plan.map(function(sit, i) {
@@ -4025,6 +4531,9 @@ function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, on
                     { key: i, className: "card", style: { marginBottom: "10px" } },
                     e("h3", null, (sit.window[0] < 12 ? "Morning" : "Evening") + " sit · " + clock(sit.window[0]) + " - " + clock(sit.window[1])),
                     e("p", { className: "empty", style: { margin: "0 0 8px" } }, "Forecast: " + sit.windText),
+                    sun && (new Date(date + "T" + String(sit.window[0]).padStart(2, "0") + ":00:00").getTime() < sun.legalStart || new Date(date + "T" + String(sit.window[1]).padStart(2, "0") + ":00:00").getTime() > sun.legalEnd)
+                        ? e("p", { style: { margin: "0 0 8px", fontSize: "13px", color: "#c0392b" } }, "⚠ Part of this window is outside legal shooting light.")
+                        : null,
                     !hasWind || !best.total
                         ? e("p", null, best && best.total ? "No stand has a safe wind for this window." : "No forecast hours for this window.")
                         : e(
@@ -4044,6 +4553,20 @@ function huntPlannerView(stands, cameras, trails, forecast, dayOffset, onDay, on
                     })
                 );
             }),
+
+        extras.adjustOn && extras.model && extras.model.ready
+            ? e("div", { style: { margin: "10px 0" } },
+                e("div", { style: { fontWeight: 600, marginBottom: "4px" } }, "What your sightings say about weather"),
+                ["pressure", "temp", "wind"].map(function(dim) {
+                    return e("div", { key: dim, style: { fontSize: "13px", marginBottom: "2px" } },
+                        (dim === "pressure" ? "Pressure: " : dim === "temp" ? "Temperature: " : "Wind: ") +
+                        Object.keys(extras.model.bins[dim]).sort().map(function(label) {
+                            const b = extras.model.bins[dim][label];
+                            return label + " x" + b.factor.toFixed(2) + " (" + b.deer + " deer / " + b.hours + " hrs)";
+                        }).join(" · "));
+                }),
+                e("div", { className: "empty", style: { fontSize: "12px" } }, "x1.00 = average. These are pulled toward 1 when there is little data, so early numbers are cautious."))
+            : null,
 
         e("p", { className: "empty", style: { marginBottom: 0 } },
             "Score = the stand's hour-by-hour score (from its connected cameras) added up over the hours when the forecast wind is in the stand's safe list. Set safe winds in each stand's panel.")
@@ -4269,6 +4792,7 @@ function sanitizeHunts(list) {
 
 function getBucks() { return sanitizeBucks(loadList(BUCK_KEY)); }
 function getHunts() { return sanitizeHunts(loadList(HUNT_KEY)); }
+function getFeatures() { return sanitizeFeatures(loadList(FEATURE_KEY)); }
 
 // Camera maintenance reminder settings
 const MAINT_DEFAULT = {
@@ -4581,6 +5105,20 @@ function App() {
     const [thumbsOn, setThumbsOn] = useState(function() { return localStorage.getItem("deerThumbs") !== "0"; });  // keep small photo thumbnails with sightings?
     const [storageFull, setStorageFull] = useState(false);  // true if this device ran out of room to save
     const [huntDraft, setHuntDraft] = useState(null);  // the hunt being entered in the Hunt log (null = form closed)
+    const [features, setFeatures] = useState(getFeatures);  // food plots, water, bedding, scrapes and rubs on the map
+    const [selectedFeatureId, setSelectedFeatureId] = useState(null);  // feature whose details are open
+    const [featureDraft, setFeatureDraft] = useState(null);  // the type being added (next map tap places it)
+    const [showFeatures, setShowFeatures] = useState(function() { return getLayers().features; });  // show features on the map?
+    const [sightFilter, setSightFilter] = useState({ camera: "all", type: "all", buck: "all", season: "all", q: "" });  // Sightings tab filters
+    const [sightSelected, setSightSelected] = useState({});  // sightings ticked on the Sightings tab { "camId:sightingId": true }
+    const [sightMode, setSightMode] = useState("list");  // Sightings tab layout: list or grid
+    const [sightLimit, setSightLimit] = useState(60);  // how many sightings the Sightings tab shows
+    const [histWx, setHistWx] = useState(getSavedHist);  // weather history used for weather learning
+    const [chartSeason, setChartSeason] = useState("all");  // Charts tab season filter
+    const [rutBucksOnly, setRutBucksOnly] = useState(true);  // rut tracker counts bucks only?
+    const [scentOn, setScentOn] = useState(false);  // draw the scent cone for the selected stand?
+    const [scentWind, setScentWind] = useState("now");  // which wind: now / am / pm (forecast) or a compass code
+    const [scentRange, setScentRange] = useState(250);  // how far the scent cone reaches, in meters
     const [tileArea, setTileArea] = useState("cameras");  // offline map area: 'cameras' (around cameras and stands) or 'view' (what the map shows now)
     const [tileMaxZoom, setTileMaxZoom] = useState(17);  // most detailed zoom level to download
     const [tileJob, setTileJob] = useState(null);  // progress of the offline map download { running, total, done, failed, message }
@@ -4642,6 +5180,7 @@ function App() {
     const movingStandRef = useRef(null);  // copy of movingStandId for map click handlers
     const standMarkersRef = useRef({});  // stand id -> its triangle on the map
     const standDraftRef = useRef(null);  // copy of standDraft for the map click handler
+    const featureDraftRef = useRef(null);  // copy of featureDraft for map click handlers
     const showTrailsRef = useRef(true);  // copy of showTrails for drawing trails
     const showStandsRef = useRef(true);  // copy of showStands
     const heatLayerRef = useRef(null);  // the heat map layer
@@ -4652,9 +5191,12 @@ function App() {
     colorsRef.current = colors;
     // Keep the ref copies up to date on every redraw
     standDraftRef.current = standDraft;
+    featureDraftRef.current = featureDraft;
     showTrailsRef.current = showTrails;
     showStandsRef.current = showStands;
 
+    const featureMarkersRef = useRef({});  // the map markers for features
+    const scentLayerRef = useRef(null);  // the scent cone drawn on the map
     const tileCancelRef = useRef(false);  // set to true to stop the offline map download
     const weatherBusyRef = useRef(false);  // true while weather is being added to sightings
     const weatherTriedRef = useRef({});  // sightings we already tried this session (so failures don't loop)
@@ -4762,6 +5304,7 @@ function App() {
             stands: getStands(),
             bucks: getBucks(),
             hunts: getHunts(),
+            features: getFeatures(),
             // colours, scoring numbers and reminder settings travel with the data so every device matches
             settings: getSettingsBundle(getTheme(), getMaintenance())
         };
@@ -4824,6 +5367,7 @@ function App() {
 
         if (Array.isArray(driveData.bucks)) setBucks(sanitizeBucks(driveData.bucks));
         if (Array.isArray(driveData.hunts)) setHunts(sanitizeHunts(driveData.hunts));
+        if (Array.isArray(driveData.features)) setFeatures(sanitizeFeatures(driveData.features));
 
         applySettingsBundleFromData(driveData.settings);
 
@@ -4867,7 +5411,8 @@ function App() {
                     getTrails().length > 0 ||
                     getStands().length > 0 ||
                     getBucks().length > 0 ||
-                    getHunts().length > 0;
+                    getHunts().length > 0 ||
+                    getFeatures().length > 0;
 
                 // The Drive file version this device saw at its last sync
                 const lastRemote =
@@ -5053,7 +5598,7 @@ function App() {
     // stamp the edit time, and (if connected to Drive) sync 2 seconds later
     useEffect(function() {
 
-        setStorageFull(!saveData(cameras, trails, stands, bucks, hunts));
+        setStorageFull(!saveData(cameras, trails, stands, bucks, hunts, features));
 
         try { localStorage.setItem(MAINT_KEY, JSON.stringify(maintenance)); } catch (error) {}
 
@@ -5080,7 +5625,7 @@ function App() {
             }, 2000);
         }
 
-    }, [cameras, trails, stands, bucks, hunts, theme, maintenance, settingsVersion]);
+    }, [cameras, trails, stands, bucks, hunts, features, theme, maintenance, settingsVersion]);
 
     // Check Drive again when you return to the app and once a minute while connected
     useEffect(function() {
@@ -5113,6 +5658,8 @@ function App() {
     const selectedStand = stands.find(function(stand) {
         return stand.id === selectedStandId;
     });
+
+    const selectedFeature = features.find(function(f) { return f.id === selectedFeatureId; });
 
     // Finishes 'Move Marker': puts the waiting camera at the tapped spot. Returns false if no camera was waiting.
     function placeMovingCamera(latlng) {
@@ -5281,6 +5828,8 @@ function App() {
             trailHeatRef.current = null;
             arrowMarkersRef.current = {};
             standMarkersRef.current = {};
+            featureMarkersRef.current = {};
+            scentLayerRef.current = null;
             facingLayersRef.current = {};
         }
 
@@ -5388,6 +5937,31 @@ function App() {
                 standDraftRef.current = null;
                 setStandDraft(null);
                 setSelectedStandId(stand.id);
+
+                return;
+            }
+
+            // Adding a map feature (food plot, water, bedding, scrape, rub)
+            if (featureDraftRef.current) {
+
+                const type = featureDraftRef.current;
+
+                const feature = {
+                    id: Date.now(),
+                    type: type,
+                    name: type,
+                    notes: "",
+                    lat: event.latlng.lat,
+                    lng: event.latlng.lng
+                };
+
+                setFeatures(function(previous) { return [...previous, feature]; });
+
+                featureDraftRef.current = null;
+                setFeatureDraft(null);
+                setSelectedCameraId(null);
+                setSelectedStandId(null);
+                setSelectedFeatureId(feature.id);
 
                 return;
             }
@@ -5951,6 +6525,45 @@ function App() {
         }
     }
 
+    // WEATHER LEARNING: when the planner's weather adjustment is on, make sure we have the weather history it needs
+    useEffect(function() {
+
+        if (view !== "hunt" || !SCORE_CONFIG.weatherAdjust) return;
+
+        const center = propertyCenter(cameras, stands);
+
+        let first = null;
+        cameras.forEach(function(c) { c.sightings.forEach(function(sg) { if (sg.date && (first === null || sg.date < first)) first = sg.date; }); });
+
+        if (!center || first === null) return;
+
+        const yesterday = addDaysToDate(todayString(), -1);
+        const earliest = addDaysToDate(todayString(), -120);
+        const from = first < earliest ? earliest : first;
+
+        const saved = getSavedHist();
+
+        // reuse the saved history if it covers the range and is under 12 hours old
+        if (saved && saved.from <= from && saved.to >= yesterday && Date.now() - saved.fetchedAt < 12 * 3600000) {
+            if (!histWx) setHistWx(saved);
+            return;
+        }
+
+        if (from > yesterday) return;
+
+        (async function() {
+            try {
+                const rows = await fetchRangeWeather(center.lat, center.lng, from, yesterday);
+                const fresh = { from: from, to: yesterday, fetchedAt: Date.now(), rows: rows };
+                try { localStorage.setItem(HIST_KEY, JSON.stringify(fresh)); } catch (error) {}
+                setHistWx(fresh);
+            } catch (error) {
+                setForecastStatus("Couldn't load weather history (" + (error && error.message ? error.message : "no connection") + ").");
+            }
+        })();
+
+    }, [view, settingsVersion]);
+
     // Count the saved offline map tiles when the Map tab opens
     useEffect(function() {
         if (view === "map") refreshTileStored();
@@ -6062,6 +6675,95 @@ function App() {
 
     }, [cameras, hunts, weatherAuto, weatherTick]);
 
+    // Selecting a camera or stand closes any open feature panel
+    useEffect(function() {
+        if (selectedCameraId || selectedStandId) setSelectedFeatureId(null);
+    }, [selectedCameraId, selectedStandId]);
+
+    // FEATURES: keep the emoji badges on the map in step with the features list (add, rename, remove, show/hide)
+    useEffect(function() {
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        const markers = featureMarkersRef.current;
+        const ids = {};
+
+        features.forEach(function(f) { ids[f.id] = true; });
+
+        Object.keys(markers).forEach(function(id) {
+            if (!ids[id]) {
+                try { markers[id].remove(); } catch (error) {}
+                delete markers[id];
+            }
+        });
+
+        features.forEach(function(feature) {
+
+            let marker = markers[feature.id];
+
+            if (!marker) {
+
+                marker = L.marker([feature.lat, feature.lng], { icon: featureIcon(feature.type), keyboard: false });
+
+                (function(created, featureId) {
+                    created.on("click", function(event) {
+                        L.DomEvent.stopPropagation(event);
+                        setSelectedCameraId(null);
+                        setSelectedStandId(null);
+                        setShowSightingForm(false);
+                        setSelectedFeatureId(featureId);
+                    });
+                })(marker, feature.id);
+
+                markers[feature.id] = marker;
+
+            } else {
+                marker.setLatLng([feature.lat, feature.lng]);
+                marker.setIcon(featureIcon(feature.type));
+            }
+
+            marker.unbindTooltip();
+            marker.bindTooltip(feature.name, { direction: "top", offset: [0, -12] });
+
+            if (showFeatures) {
+                if (!map.hasLayer(marker)) marker.addTo(map);
+            } else if (map.hasLayer(marker)) {
+                map.removeLayer(marker);
+            }
+        });
+
+    }, [features, mapVersion, showFeatures]);
+
+    // SCENT CONE: with a stand open and the cone switched on, shade the area downwind of it
+    useEffect(function() {
+
+        const map = mapRef.current;
+
+        if (!map) return;
+
+        if (scentLayerRef.current) {
+            try { map.removeLayer(scentLayerRef.current); } catch (error) {}
+            scentLayerRef.current = null;
+        }
+
+        if (!scentOn || !selectedStand) return;
+
+        const from = scentWindFrom();
+
+        if (from === null) return;
+
+        scentLayerRef.current = L.polygon(scentConePolygon(selectedStand, from, scentRange), {
+            color: "#c0392b",
+            weight: 2,
+            fillColor: "#c0392b",
+            fillOpacity: 0.25,
+            interactive: false
+        }).addTo(map);
+
+    }, [selectedStandId, stands, scentOn, scentWind, scentRange, forecast, mapVersion]);
+
     // THEME: apply and save the colour choices
     useEffect(function() {
         applyTheme(theme);
@@ -6094,7 +6796,8 @@ function App() {
             LAYERS_KEY,
             JSON.stringify({
                 trails: showTrails,
-                stands: showStands
+                stands: showStands,
+                features: showFeatures
             })
         );
 
@@ -6116,7 +6819,7 @@ function App() {
             }
         });
 
-    }, [showTrails, showStands, mapVersion]);
+    }, [showTrails, showStands, showFeatures, mapVersion]);
 
     // Open a camera's details, switch to the map, and zoom to it
     function openCamera(camera) {
@@ -6482,6 +7185,7 @@ function App() {
             stands: stands,
             bucks: bucks,
             hunts: hunts,
+            features: features,
             settings: getSettingsBundle(theme, maintenance)
         };
 
@@ -6614,6 +7318,7 @@ function App() {
                 if (Array.isArray(data.stands)) setStands(sanitizeStands(data.stands) || []);
                 setBucks(sanitizeBucks(data.bucks));
                 setHunts(sanitizeHunts(data.hunts));
+                setFeatures(sanitizeFeatures(data.features));
                 applySettingsBundleFromData(data.settings);
 
                 setSelectedCameraId(null);
@@ -7959,6 +8664,18 @@ function App() {
                         }
                     },
                     showStands ? "Stands: On" : "Stands: Off"
+                ),
+
+                e(
+                    "button",
+                    {
+                        className: showFeatures ? "primary" : "secondary",
+                        style: { flex: 1 },
+                        onClick: function() {
+                            setShowFeatures(!showFeatures);
+                        }
+                    },
+                    showFeatures ? "Sign: On" : "Sign: Off"
                 )
             ),
 
@@ -8449,6 +9166,182 @@ function App() {
         );
     }
 
+    // ---- MAP FEATURES ----
+    function startFeatureDraft(type) {
+
+        cancelMove();
+
+        if (drawingTrailRef.current) cancelTrail();
+
+        standDraftRef.current = null;
+        setStandDraft(null);
+        setSelectedCameraId(null);
+        setSelectedStandId(null);
+        setSelectedFeatureId(null);
+        setShowSightingForm(false);
+        setShowFeatures(true);
+        setFeatureDraft(type);
+    }
+
+    function updateFeature(id, patch) {
+        setFeatures(function(previous) { return previous.map(function(f) { return f.id === id ? { ...f, ...patch } : f; }); });
+    }
+
+    function deleteFeature(id) {
+        const f = features.find(function(x) { return x.id === id; });
+        if (!f || !confirm("Delete " + f.name + "?")) return;
+        setFeatures(function(previous) { return previous.filter(function(x) { return x.id !== id; }); });
+        setSelectedFeatureId(null);
+    }
+
+    function openFeature(f) {
+        setSelectedCameraId(null);
+        setSelectedStandId(null);
+        setSelectedFeatureId(f.id);
+        setShowFeatures(true);
+        setView("map");
+        setTimeout(function() { if (mapRef.current) mapRef.current.setView([f.lat, f.lng], 17); }, 150);
+    }
+
+    // The wind direction (degrees it blows FROM) the scent cone should use, or null if there's no data
+    function scentWindFrom() {
+
+        if (WIND_CODES.indexOf(scentWind) !== -1) return WIND_CODES.indexOf(scentWind) * 45;
+
+        const now = new Date();
+        const day = todayString();
+        const win = SCORE_CONFIG.primeWindows;
+
+        let w = null;
+
+        if (scentWind === "now") w = forecastWindFrom(forecast, day, now.getHours(), now.getHours() + 1);
+        else if (scentWind === "am") w = forecastWindFrom(forecast, day, win[0][0], win[0][1]);
+        else if (scentWind === "pm") w = forecastWindFrom(forecast, day, win[1][0], win[1][1]);
+
+        return w ? w.dir : null;
+    }
+
+    // Sidebar panel for a selected feature
+    function featurePanel() {
+
+        const f = selectedFeature;
+
+        return e(
+            React.Fragment,
+            null,
+            e("button", { className: "secondary", onClick: function() { setSelectedFeatureId(null); } }, "← Back"),
+            e(
+                "div",
+                { className: "card" },
+                e("h2", null, featureType(f.type).emoji + " " + f.name),
+                e("div", { className: "form-group" }, e("label", null, "Name"),
+                    e("input", { type: "text", value: f.name, onChange: function(ev) { updateFeature(f.id, { name: ev.target.value }); } })),
+                e("div", { className: "form-group" }, e("label", null, "Type"),
+                    e("select", { value: f.type, onChange: function(ev) { updateFeature(f.id, { type: ev.target.value }); } },
+                        FEATURE_TYPES.map(function(t) { return e("option", { key: t.value, value: t.value }, t.emoji + " " + t.value); }))),
+                e("div", { className: "form-group" }, e("label", null, "Notes"),
+                    e("textarea", { value: f.notes, placeholder: "Fresh sign, what's planted, how big…", onChange: function(ev) { updateFeature(f.id, { notes: ev.target.value }); } })),
+                e("p", { className: "empty" }, f.lat.toFixed(6) + ", " + f.lng.toFixed(6)),
+                stands.length
+                    ? e("div", null,
+                        e("div", { style: { fontWeight: 600, marginBottom: "4px" } }, "Closest stands"),
+                        stands.map(function(st) { return { st: st, d: metersBetween(f.lat, f.lng, st.lat, st.lng) }; })
+                            .sort(function(a, b) { return a.d - b.d; }).slice(0, 3)
+                            .map(function(r) { return e("div", { key: r.st.id, style: { fontSize: "14px" } }, r.st.name + " · " + Math.round(r.d) + " m"); }))
+                    : null,
+                e("button", { className: "danger", style: { width: "100%", marginTop: "10px" }, onClick: function() { deleteFeature(f.id); } }, "Delete")
+            ),
+            mapOptions()
+        );
+    }
+
+    // Sidebar section on the Map page: add and list food plots, water, bedding, scrapes and rubs
+    function featuresSection() {
+
+        return e(
+            Collapsible,
+            { id: "side-features", title: "Food, water and sign", tag: "h2", className: "section" },
+            featureDraft
+                ? e("div", { className: "drawing" },
+                    "Tap the map where the " + featureDraft.toLowerCase() + " is.",
+                    e("div", null, e("button", { className: "cancel-button", style: { marginTop: "6px" }, onClick: function() { featureDraftRef.current = null; setFeatureDraft(null); } }, "Cancel")))
+                : e("div", { style: { display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" } },
+                    FEATURE_TYPES.map(function(t) {
+                        return e("button", { key: t.value, className: "secondary", onClick: function() { startFeatureDraft(t.value); } }, t.emoji + " " + t.value);
+                    })),
+            features.length
+                ? features.map(function(f) {
+                    return e("div", { key: f.id, className: "card", style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" } },
+                        e("span", null, featureType(f.type).emoji + " " + f.name),
+                        e("button", { className: "primary", onClick: function() { openFeature(f); } }, "Open"));
+                })
+                : e("p", { className: "empty" }, "Mark where deer feed, drink, bed, scrape and rub.")
+        );
+    }
+
+    // Cards in a stand's panel: nearby sign, and the scent cone
+    function standMapCards(stand) {
+
+        const near = features.map(function(f) {
+            return { f: f, d: metersBetween(stand.lat, stand.lng, f.lat, f.lng), b: bearingBetween(stand.lat, stand.lng, f.lat, f.lng) };
+        }).filter(function(r) { return r.d <= 300; }).sort(function(a, b) { return a.d - b.d; });
+
+        const from = scentOn ? scentWindFrom() : null;
+
+        const inCone = from === null ? [] : features.filter(function(f) { return inScentCone(stand, f.lat, f.lng, from, scentRange); })
+            .map(function(f) { return { f: f, d: metersBetween(stand.lat, stand.lng, f.lat, f.lng) }; })
+            .sort(function(a, b) { return a.d - b.d; });
+
+        const camsInCone = from === null ? [] : cameras.filter(function(c) { return inScentCone(stand, c.lat, c.lng, from, scentRange); });
+
+        return e(
+            React.Fragment,
+            null,
+
+            e(
+                "div",
+                { className: "card" },
+                e("h3", null, "Scent cone"),
+                e("p", { className: "empty", style: { marginTop: 0 } }, "Shades the ground downwind of this stand, where deer can smell you."),
+                e("button", { className: scentOn ? "primary" : "secondary", style: { width: "100%", marginBottom: "8px" }, onClick: function() { setScentOn(!scentOn); } }, scentOn ? "Scent cone: On" : "Scent cone: Off"),
+                scentOn
+                    ? e("div", null,
+                        e("div", { className: "form-group" }, e("label", null, "Wind"),
+                            e("select", { value: scentWind, onChange: function(ev) { setScentWind(ev.target.value); } },
+                                e("option", { value: "now" }, "Forecast: right now"),
+                                e("option", { value: "am" }, "Forecast: morning sit"),
+                                e("option", { value: "pm" }, "Forecast: evening sit"),
+                                WIND_CODES.map(function(c) { return e("option", { key: c, value: c }, "Wind from " + c); }))),
+                        e("div", { className: "form-group" }, e("label", null, "Reach: " + scentRange + " m"),
+                            e("input", { type: "range", min: 50, max: 600, step: 25, value: scentRange, onChange: function(ev) { setScentRange(Number(ev.target.value)); } })),
+                        from === null
+                            ? e("p", { className: "empty" }, "No forecast for that time. Open the Hunt tab to load one, or pick a wind direction.")
+                            : e("div", null,
+                                e("p", { style: { margin: "0 0 6px" } }, "Wind from " + windCode(from) + " (" + Math.round(from) + "°), so scent blows toward " + windCode((from + 180) % 360) + "."),
+                                inCone.length || camsInCone.length
+                                    ? e("div", null,
+                                        e("div", { style: { fontWeight: 600, color: "#c0392b" } }, "⚠ In the scent cone:"),
+                                        inCone.map(function(r) { return e("div", { key: r.f.id, style: { fontSize: "14px" } }, featureType(r.f.type).emoji + " " + r.f.name + " · " + Math.round(r.d) + " m"); }),
+                                        camsInCone.map(function(c) { return e("div", { key: c.id, style: { fontSize: "14px" } }, "📷 " + c.name); }))
+                                    : e("p", { className: "empty", style: { margin: 0 } }, "Nothing marked on the map is downwind within " + scentRange + " m.")))
+                    : null
+            ),
+
+            e(
+                "div",
+                { className: "card" },
+                e("h3", null, "Nearby sign"),
+                near.length
+                    ? near.map(function(r) {
+                        return e("div", { key: r.f.id, style: { display: "flex", justifyContent: "space-between", fontSize: "14px", padding: "2px 0" } },
+                            e("span", null, featureType(r.f.type).emoji + " " + r.f.name),
+                            e("span", null, Math.round(r.d) + " m " + windCode(r.b)));
+                    })
+                    : e("p", { className: "empty", style: { margin: 0 } }, "No food, water, bedding or sign marked within 300 m. Add some under \"Food, water and sign\" in the map sidebar.")
+            )
+        );
+    }
+
     // ---- OFFLINE MAP ----
     // The area to download: around every camera and stand (about 450 m extra), or the part of the map on screen
     function tileBounds() {
@@ -8620,7 +9513,11 @@ function App() {
                     e(
                         Collapsible,
                         { id: "hunt-planner", title: "Best stand (wind + scores)", className: "dashboard-card wide" },
-                        huntPlannerView(stands, cameras, trails, forecast, planDay, setPlanDay, refreshForecast, forecastStatus, openStand)
+                        huntPlannerView(stands, cameras, trails, forecast, planDay, setPlanDay, refreshForecast, forecastStatus, openStand, {
+                            center: propertyCenter(cameras, stands),
+                            adjustOn: !!SCORE_CONFIG.weatherAdjust,
+                            model: SCORE_CONFIG.weatherAdjust ? (histWx ? learnWeatherFactors(cameras, histWx) : { ready: false, reason: "Loading weather history…", bins: {}, deer: 0, days: 0 }) : null
+                        })
                     )
 ,
                     e(
@@ -8784,6 +9681,284 @@ function App() {
                     e("p", { className: "empty", style: { marginBottom: 0 } }, "Predicted = the stand's hour-by-hour score added up over the hours you sat (using today's scores). Conditions are filled in automatically when online.")
                 )
                 : e("p", { className: "empty" }, "No hunts logged yet.")
+        );
+    }
+
+    // ---- SIGHTINGS TAB: every sighting from every camera in one log ----
+    function sightingsPage() {
+
+        const rows = [];
+
+        cameras.forEach(function(camera) {
+            camera.sightings.forEach(function(sighting) {
+                rows.push({ camera: camera, sighting: sighting, key: camera.id + ":" + sighting.id });
+            });
+        });
+
+        rows.sort(function(a, b) {
+            return (sightingTime(b.sighting) || 0) - (sightingTime(a.sighting) || 0);
+        });
+
+        const f = sightFilter;
+        const q = f.q.trim().toLowerCase();
+        const buckName = {};
+        bucks.forEach(function(b) { buckName[String(b.id)] = b.name; });
+
+        // how many sightings each named buck has (shown in the filter list)
+        const buckCounts = {};
+        rows.forEach(function(r) { if (r.sighting.buckId !== undefined) buckCounts[String(r.sighting.buckId)] = (buckCounts[String(r.sighting.buckId)] || 0) + 1; });
+
+        const seasons = [];
+        rows.forEach(function(r) { const y = seasonOf(r.sighting.date); if (y !== null && seasons.indexOf(y) === -1) seasons.push(y); });
+        seasons.sort(function(a, b) { return b - a; });
+
+        const shown = rows.filter(function(r) {
+
+            const sg = r.sighting;
+
+            if (f.camera !== "all" && String(r.camera.id) !== f.camera) return false;
+
+            if (f.type === "Buck" ? !isBuckType(sg.deerType) : (f.type !== "all" && sg.deerType !== f.type)) return false;
+
+            if (f.buck === "untagged" && !(isBuckType(sg.deerType) && sg.buckId === undefined)) return false;
+            if (f.buck !== "all" && f.buck !== "untagged" && String(sg.buckId) !== f.buck) return false;
+
+            if (f.season !== "all" && String(seasonOf(sg.date)) !== f.season) return false;
+
+            if (q) {
+                const hay = (r.camera.name + " " + (sg.notes || "") + " " + sg.deerType + " " + (buckName[String(sg.buckId)] || "")).toLowerCase();
+                if (hay.indexOf(q) === -1) return false;
+            }
+
+            return true;
+        });
+
+        const selectedRows = rows.filter(function(r) { return sightSelected[r.key]; });
+        const visible = shown.slice(0, sightLimit);
+        const now = Date.now();
+
+        function setF(patch) { setSightFilter(function(prev) { return { ...prev, ...patch }; }); setSightLimit(60); }
+
+        // Apply a change to every ticked sighting (undefined removes a field)
+        function patchSelected(patch) {
+            setCameras(function(previous) {
+                return previous.map(function(camera) {
+                    return {
+                        ...camera,
+                        sightings: camera.sightings.map(function(sighting) {
+                            if (!sightSelected[camera.id + ":" + sighting.id]) return sighting;
+                            const next = { ...sighting, ...patch };
+                            Object.keys(next).forEach(function(k) { if (next[k] === undefined) delete next[k]; });
+                            return next;
+                        })
+                    };
+                });
+            });
+        }
+
+        // Change one sighting
+        function patchOne(row, patch) {
+            setCameras(function(previous) {
+                return previous.map(function(camera) {
+                    if (camera.id !== row.camera.id) return camera;
+                    return {
+                        ...camera,
+                        sightings: camera.sightings.map(function(sighting) {
+                            if (sighting.id !== row.sighting.id) return sighting;
+                            const next = { ...sighting, ...patch };
+                            Object.keys(next).forEach(function(k) { if (next[k] === undefined) delete next[k]; });
+                            return next;
+                        })
+                    };
+                });
+            });
+        }
+
+        function deleteRow(row) {
+            if (!confirm("Delete this sighting?")) return;
+            setCameras(function(previous) {
+                return previous.map(function(camera) {
+                    return camera.id !== row.camera.id ? camera : { ...camera, sightings: camera.sightings.filter(function(sg) { return sg.id !== row.sighting.id; }) };
+                });
+            });
+            setSightSelected(function(prev) { const n = { ...prev }; delete n[row.key]; return n; });
+        }
+
+        function buckValue(v) { return v === "" ? undefined : (isNaN(Number(v)) ? v : Number(v)); }
+
+        // Ask for a name, create the buck, and return its id (or null)
+        function newBuckId() {
+            const name = prompt("Name this buck (for example: Split G2):");
+            if (!name || !name.trim()) return null;
+            const id = Date.now();
+            setBucks(function(previous) { return previous.concat([{ id: id, name: name.trim(), notes: "" }]); });
+            return id;
+        }
+
+        function buckSelect(row, small) {
+            const sg = row.sighting;
+            return e(
+                "select",
+                {
+                    value: sg.buckId === undefined ? "" : String(sg.buckId),
+                    style: small ? { maxWidth: "150px" } : null,
+                    onChange: function(ev) {
+                        if (ev.target.value === "__new") {
+                            const id = newBuckId();
+                            if (id !== null) patchOne(row, { buckId: id });
+                        } else {
+                            patchOne(row, { buckId: buckValue(ev.target.value) });
+                        }
+                    }
+                },
+                e("option", { value: "" }, "Unnamed"),
+                bucks.map(function(b) { return e("option", { key: b.id, value: String(b.id) }, b.name); }),
+                e("option", { value: "__new" }, "+ New buck…")
+            );
+        }
+
+        const grid = sightMode === "grid";
+
+        function card(row) {
+
+            const sg = row.sighting;
+            const hrTxt = sg.time ? sg.time : "";
+            const pts = sightingScore(sg, row.camera, now);
+            const name = buckName[String(sg.buckId)];
+
+            return e(
+                "div",
+                { key: row.key, className: "card", style: { marginBottom: grid ? 0 : "10px", display: "flex", flexDirection: grid ? "column" : "row", gap: "10px", alignItems: grid ? "stretch" : "flex-start", outline: sightSelected[row.key] ? "2px solid var(--brand)" : "none" } },
+
+                e("input", {
+                    type: "checkbox",
+                    checked: !!sightSelected[row.key],
+                    style: { width: "22px", height: "22px", minHeight: 0, flex: "none", alignSelf: grid ? "flex-start" : "center" },
+                    onChange: function() {
+                        setSightSelected(function(prev) { const n = { ...prev }; if (n[row.key]) delete n[row.key]; else n[row.key] = true; return n; });
+                    }
+                }),
+
+                sg.thumb
+                    ? e("img", { src: sg.thumb, alt: "Sighting photo", style: { width: grid ? "100%" : "84px", maxWidth: grid ? "none" : "84px", borderRadius: "6px", cursor: "pointer", flex: "none", alignSelf: "flex-start" }, onClick: function() { setPhotoView(sg.thumb); } })
+                    : (grid ? null : e("div", { style: { width: "84px", height: "56px", borderRadius: "6px", background: "var(--line)", flex: "none" } })),
+
+                e(
+                    "div",
+                    { style: { flex: 1, minWidth: 0 } },
+                    e("div", { style: { fontWeight: 600 } }, (sg.number || 1) + " " + sg.deerType + (sg.antlerPoints ? " · " + sg.antlerPoints + " pts" : "") + (name ? " · " + name : "")),
+                    e("div", { style: { fontSize: "13px", color: "var(--muted)" } }, (sg.date || "no date") + " " + hrTxt + " · " + row.camera.name + (sg.direction ? " · heading " + sg.direction : "") + " · " + fmtScore(pts) + " pts"),
+                    conditionsText(sg) ? e("div", { style: { fontSize: "12px", color: "var(--muted)" } }, conditionsText(sg)) : null,
+                    sg.notes ? e("div", { style: { fontSize: "12px", color: "var(--muted)" } }, sg.notes) : null,
+                    e(
+                        "div",
+                        { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" } },
+                        e(
+                            "select",
+                            { value: sg.deerType, onChange: function(ev) { patchOne(row, { deerType: ev.target.value }); } },
+                            ["Big Buck", "Buck", "Doe", "Fawn", "Unknown"].map(function(t) { return e("option", { key: t, value: t }, t); })
+                        ),
+                        isBuckType(sg.deerType) ? buckSelect(row, true) : null,
+                        e("button", { className: "danger", style: { padding: "4px 10px", minHeight: 0 }, onClick: function() { deleteRow(row); } }, "Delete")
+                    )
+                )
+            );
+        }
+
+        return e(
+            "div",
+            { className: "dashboard" },
+            e(
+                "div",
+                { className: "dashboard-inner" },
+                e("div", { className: "dashboard-title" }, e("h2", null, "Sightings"),
+                    e("p", { className: "empty" }, rows.length + " sightings in total, " + shown.length + " shown. Tick sightings to compare their photos and name the buck in one go.")),
+
+                // filters
+                e(
+                    "div",
+                    { className: "card" },
+                    e("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "10px" } },
+                        e("div", { className: "form-group", style: { marginBottom: 0 } }, e("label", null, "Camera"),
+                            e("select", { value: f.camera, onChange: function(ev) { setF({ camera: ev.target.value }); } },
+                                e("option", { value: "all" }, "All cameras"),
+                                cameras.map(function(c) { return e("option", { key: c.id, value: String(c.id) }, c.name); }))),
+                        e("div", { className: "form-group", style: { marginBottom: 0 } }, e("label", null, "Deer"),
+                            e("select", { value: f.type, onChange: function(ev) { setF({ type: ev.target.value }); } },
+                                e("option", { value: "all" }, "All"),
+                                e("option", { value: "Buck" }, "Any buck"),
+                                ["Big Buck", "Doe", "Fawn", "Unknown"].map(function(t) { return e("option", { key: t, value: t }, t); }))),
+                        e("div", { className: "form-group", style: { marginBottom: 0 } }, e("label", null, "Buck"),
+                            e("select", { value: f.buck, onChange: function(ev) { setF({ buck: ev.target.value }); } },
+                                e("option", { value: "all" }, "All"),
+                                e("option", { value: "untagged" }, "Bucks not named yet"),
+                                bucks.map(function(b) { return e("option", { key: b.id, value: String(b.id) }, b.name + " (" + (buckCounts[String(b.id)] || 0) + ")"); }))),
+                        e("div", { className: "form-group", style: { marginBottom: 0 } }, e("label", null, "Season"),
+                            e("select", { value: f.season, onChange: function(ev) { setF({ season: ev.target.value }); } },
+                                e("option", { value: "all" }, "All seasons"),
+                                seasons.map(function(y) { return e("option", { key: y, value: String(y) }, seasonLabel(y)); }))),
+                        e("div", { className: "form-group", style: { marginBottom: 0 } }, e("label", null, "Search"),
+                            e("input", { type: "text", value: f.q, placeholder: "notes, camera…", onChange: function(ev) { setF({ q: ev.target.value }); } }))
+                    ),
+                    e("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" } },
+                        e("button", { className: grid ? "secondary" : "primary", onClick: function() { setSightMode("list"); } }, "List"),
+                        e("button", { className: grid ? "primary" : "secondary", onClick: function() { setSightMode("grid"); } }, "Photo grid"),
+                        e("button", { className: "secondary", onClick: function() {
+                            setSightSelected(function(prev) { const n = { ...prev }; shown.slice(0, 200).forEach(function(r) { n[r.key] = true; }); return n; });
+                        } }, "Tick all shown"),
+                        selectedRows.length ? e("button", { className: "secondary", onClick: function() { setSightSelected({}); } }, "Clear ticks (" + selectedRows.length + ")") : null)
+                ),
+
+                // the ticked sightings side by side, so you can eyeball whether it's the same buck
+                selectedRows.length
+                    ? e(
+                        "div",
+                        { className: "card", style: { position: "sticky", top: 0, zIndex: 5 } },
+                        e("h3", null, selectedRows.length + " ticked"),
+                        e("div", { style: { display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "6px" } },
+                            selectedRows.slice(0, 12).map(function(r) {
+                                return r.sighting.thumb
+                                    ? e("img", { key: r.key, src: r.sighting.thumb, alt: "Ticked sighting", style: { height: "110px", borderRadius: "6px", cursor: "pointer", flex: "none" }, onClick: function() { setPhotoView(r.sighting.thumb); } })
+                                    : e("div", { key: r.key, style: { height: "110px", width: "140px", borderRadius: "6px", background: "var(--line)", flex: "none", fontSize: "12px", padding: "6px" } }, r.sighting.date + " " + (r.sighting.time || "") + " no photo");
+                            })),
+                        e("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginTop: "8px" } },
+                            e("select", {
+                                value: "",
+                                onChange: function(ev) {
+                                    const v = ev.target.value;
+                                    if (v === "") return;
+                                    if (v === "__new") {
+                                        const id = newBuckId();
+                                        if (id !== null) patchSelected({ buckId: id });
+                                    } else if (v === "__none") {
+                                        patchSelected({ buckId: undefined });
+                                    } else {
+                                        patchSelected({ buckId: buckValue(v) });
+                                    }
+                                    setSightSelected({});
+                                }
+                            },
+                                e("option", { value: "" }, "Name ticked bucks as…"),
+                                bucks.map(function(b) { return e("option", { key: b.id, value: String(b.id) }, b.name); }),
+                                e("option", { value: "__new" }, "+ New buck…"),
+                                e("option", { value: "__none" }, "Remove buck name")),
+                            e("select", {
+                                value: "",
+                                onChange: function(ev) { if (ev.target.value) { patchSelected({ deerType: ev.target.value }); setSightSelected({}); } }
+                            },
+                                e("option", { value: "" }, "Set deer type…"),
+                                ["Big Buck", "Buck", "Doe", "Fawn", "Unknown"].map(function(t) { return e("option", { key: t, value: t }, t); })))
+                    )
+                    : null,
+
+                visible.length
+                    ? e("div", { style: grid ? { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "12px" } : null }, visible.map(card))
+                    : e("p", { className: "empty" }, rows.length ? "No sightings match these filters." : "No sightings yet."),
+
+                shown.length > visible.length
+                    ? e("button", { className: "secondary", style: { marginTop: "12px" }, onClick: function() { setSightLimit(sightLimit + 60); } }, "Show more (" + (shown.length - visible.length) + " left)")
+                    : null
+            )
         );
     }
 
@@ -9001,6 +10176,27 @@ function App() {
                 e(
                     "div",
                     { className: "dashboard-card", style: { marginBottom: "20px" } },
+                    e("h3", null, "Hunt planner"),
+                    field("Legal shooting light buffer (minutes)", sc, "legalBufferMinutes", "Shown on the Hunt tab: this long before sunrise to this long after sunset. Check your state's rules.", 5),
+                    e(
+                        "label",
+                        { style: { display: "flex", alignItems: "center", gap: "10px", padding: "6px 0" } },
+                        e("input", {
+                            type: "checkbox",
+                            checked: sc.weatherAdjust === 1,
+                            style: { width: "20px", height: "20px", minHeight: 0 },
+                            onChange: function(ev) { setNum(sc, "weatherAdjust", ev.target.checked ? 1 : 0); }
+                        }),
+                        "Adjust the planner using what my sightings say about weather"
+                    ),
+                    field("Weather learning caution (hours)", sc, "weatherPriorHours", "Higher = needs more data before the weather moves a score.", 5),
+                    field("History needed first (days)", sc, "weatherMinDays", "Weather adjustment stays off until you have this many days of sightings.", 1),
+                    e("p", { className: "empty", style: { marginBottom: 0 } }, "Off by default. It compares how many deer you saw per hour under each weather condition (pressure trend, temperature, wind) in your prime hours, then nudges the Hunt tab's scores. Needs a connection to download past weather.")
+                ),
+
+                e(
+                    "div",
+                    { className: "dashboard-card", style: { marginBottom: "20px" } },
                     e("h3", null, "Cameras and photos"),
                     field("Warn when a camera is silent for (days)", maintenance, "silentDays", "Flags cameras with no sightings for this long.", 1),
                     field("Remind me to check a camera every (days)", maintenance, "checkDays", "Only for cameras you have marked as checked.", 1),
@@ -9121,11 +10317,23 @@ function App() {
     function chartsPage() {
 
         // optional filter so every chart can be limited to one camera
-        const sightings = chartCamera === "all"
+        // sightings for the chosen camera, across every season (the rut tracker compares seasons)
+        const cameraSightings = chartCamera === "all"
             ? allSightings
             : allSightings.filter(function(sighting) {
                 return String(sighting.cameraId) === chartCamera;
             });
+
+        // ...then limited to the chosen season for every other chart
+        const sightings = chartSeason === "all"
+            ? cameraSightings
+            : cameraSightings.filter(function(sighting) {
+                return String(seasonOf(sighting.date)) === chartSeason;
+            });
+
+        const seasonYears = [];
+        allSightings.forEach(function(sg) { const y = seasonOf(sg.date); if (y !== null && seasonYears.indexOf(y) === -1) seasonYears.push(y); });
+        seasonYears.sort(function(a, b) { return b - a; });
 
         const visibleCameras = chartCamera === "all"
             ? cameras
@@ -9215,12 +10423,35 @@ function App() {
                                 camera.name
                             );
                         })
+                    ),
+
+                    e(
+                        "select",
+                        {
+                            value: chartSeason,
+                            style: { marginTop: "8px" },
+                            onChange: function(event) { setChartSeason(event.target.value); }
+                        },
+                        e("option", { value: "all" }, "All seasons"),
+                        seasonYears.map(function(y) { return e("option", { key: y, value: String(y) }, seasonLabel(y) + " season"); })
                     )
                 ),
 
                 e(
                     "div",
                     { className: "dashboard-grid" },
+
+                    // Chart: Rut tracker (always compares every season)
+                    chartCard(
+                        "rut",
+                        "Rut tracker (by week of the season)",
+                        e("div", null,
+                            e("div", { style: { display: "flex", gap: "8px", marginBottom: "8px" } },
+                                e("button", { className: rutBucksOnly ? "primary" : "secondary", onClick: function() { setRutBucksOnly(true); } }, "Bucks"),
+                                e("button", { className: rutBucksOnly ? "secondary" : "primary", onClick: function() { setRutBucksOnly(false); } }, "All deer")),
+                            rutTrackerChart(cameraSightings, rutBucksOnly)),
+                        true
+                    ),
 
                     // Chart: Deer seen per day (last 30 days)
                     // Chart: Weekly Power Rankings (cameras ranked by score, always uses every camera)
@@ -9562,6 +10793,9 @@ function App() {
             // Hour-by-hour score for this stand, from nearby and trail-linked cameras
             standScoreCard(standScore(selectedStand, cameras, trails, Date.now())),
 
+            // Scent cone and nearby sign
+            standMapCards(selectedStand),
+
             // Which winds this stand is good in
             e(
                 "div",
@@ -9622,6 +10856,10 @@ function App() {
 
     // THE SIDEBAR on the Map page: shows stand details, camera details, or the lists of cameras/trails/stands
     function CameraPanel() {
+
+        if (selectedFeature) {
+            return featurePanel();
+        }
 
         if (selectedStand) {
             return standPanel();
@@ -9846,6 +11084,8 @@ function App() {
                 ),
 
                 standsSection(),
+
+                featuresSection(),
 
                 offlineSection()
             );
@@ -10591,7 +11831,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v20")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v21")
             ),
 
             e(
@@ -10799,6 +12039,15 @@ function App() {
             e(
                 "button",
                 {
+                    className: view === "sightings" ? "active" : "",
+                    onClick: function() { setView("sightings"); }
+                },
+                "Sightings"
+            ),
+
+            e(
+                "button",
+                {
                     className: view === "bucks" ? "active" : "",
                     onClick: function() { setView("bucks"); }
                 },
@@ -10834,6 +12083,8 @@ function App() {
             ? huntPage()
             : view === "bucks"
             ? bucksPage()
+            : view === "sightings"
+            ? sightingsPage()
             : e(
                 "div",
                 {
