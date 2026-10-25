@@ -1834,6 +1834,102 @@ function facingWedge(camera) {
     return points;
 }
 
+// ---- AI photo helper (Claude Haiku): suggests deer type, number, antlers and direction for you to confirm ----
+const AI_KEY_STORAGE = "deerAiKey";      // your Anthropic API key (also rides along in your Google Drive sync)
+const AI_AUTO_STORAGE = "deerAiAuto";    // suggest automatically after Fetch?
+const AI_USAGE_STORAGE = "deerAiUsage";  // running total of photos / tokens used
+const AI_MODEL = "claude-haiku-5-5";
+const AI_PRICE_IN = 0.10 / 1e6;          // dollars per input token (Haiku 5.5)
+const AI_PRICE_OUT = 0.50 / 1e6;         // dollars per output token
+
+function getAiKey() {
+    try { return localStorage.getItem(AI_KEY_STORAGE) || ""; } catch { return ""; }
+}
+
+function getAiUsage() {
+    try { return { calls: 0, input: 0, output: 0, ...(JSON.parse(localStorage.getItem(AI_USAGE_STORAGE)) || {}) }; } catch { return { calls: 0, input: 0, output: 0 }; }
+}
+
+function addAiUsage(usage) {
+    const total = getAiUsage();
+    total.calls += 1;
+    total.input += Number(usage && usage.input_tokens) || 0;
+    total.output += Number(usage && usage.output_tokens) || 0;
+    try { localStorage.setItem(AI_USAGE_STORAGE, JSON.stringify(total)); } catch (error) {}
+    return total;
+}
+
+const AI_SYSTEM = "You look at trail camera photos of white-tailed deer for a hunter. Reply with ONLY a JSON object, no other text.\n" +
+    "Fields:\n" +
+    "deerType: one of \"Big Buck\" (a mature buck with a large rack, roughly 8+ points or very heavy antlers), \"Buck\" (any other antlered deer), \"Doe\", \"Fawn\", \"Unknown\" (a deer you can't classify), or \"None\" (no deer visible).\n" +
+    "number: the most deer visible together in any one photo (integer, at least 1 unless deerType is None).\n" +
+    "antlerPoints: your best count of total antler points for the biggest buck, or null if no buck or you can't tell.\n" +
+    "direction: which way the main deer is travelling relative to the camera: \"TOWARD\" (walking toward the camera), \"AWAY\" (walking away), \"LR\" (moving left to right across the frame), \"RL\" (right to left), or \"UNKNOWN\" if it is standing, feeding or unclear. If there are several photos in a row, use how the deer moves between them.\n" +
+    "confidence: \"high\", \"medium\" or \"low\".\n" +
+    "note: one short sentence on what you see and anything uncertain (night infrared, partly hidden, etc.).\n" +
+    "Be honest about uncertainty; the hunter will check your answer.";
+
+// Sends up to 3 photos (data URLs) to Haiku and returns { result, usage }
+async function aiLookAtPhotos(apiKey, images) {
+
+    const content = images.slice(0, 3).map(function(src) {
+        const m = String(src).match(/^data:(image\/[a-z+]+);base64,(.+)$/);
+        if (!m) throw new Error("A photo couldn't be read.");
+        return { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
+    });
+
+    content.push({ type: "text", text: "These " + content.length + " photo(s) are from the same trail camera event, in order. Describe the deer." });
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({ model: AI_MODEL, max_tokens: 300, system: AI_SYSTEM, messages: [{ role: "user", content: content }] })
+    });
+
+    let body = null;
+    try { body = await response.json(); } catch (error) {}
+
+    if (!response.ok) {
+        const detail = body && body.error && body.error.message ? body.error.message : "";
+        throw new Error(response.status === 401 ? "The API key was rejected. Check it in Settings." :
+            response.status === 429 ? "Too many requests right now. Try again in a minute." :
+            "AI request failed (" + response.status + (detail ? ": " + detail : "") + ")");
+    }
+
+    const text = ((body.content || []).find(function(c) { return c.type === "text"; }) || {}).text || "";
+    const found = text.match(/\{[\s\S]*\}/);
+
+    if (!found) throw new Error("The AI's answer wasn't readable.");
+
+    return { result: parseAiAnswer(JSON.parse(found[0])), usage: body.usage };
+}
+
+// Cleans the AI's answer into values the Email cards use
+function parseAiAnswer(raw) {
+
+    const types = ["Big Buck", "Buck", "Doe", "Fawn", "Unknown", "None"];
+    const dirs = { TOWARD: "rel:TOWARD", AWAY: "rel:AWAY", LR: "rel:LR", RL: "rel:RL" };
+
+    const deerType = types.indexOf(raw.deerType) !== -1 ? raw.deerType : "Unknown";
+    const number = Math.max(1, Math.round(Number(raw.number)) || 1);
+    const points = Number(raw.antlerPoints);
+    const conf = ["high", "medium", "low"].indexOf(raw.confidence) !== -1 ? raw.confidence : "low";
+
+    return {
+        deerType: deerType,
+        number: number,
+        antlerPoints: (deerType === "Buck" || deerType === "Big Buck") && Number.isFinite(points) && points >= 0 && points <= 40 ? Math.round(points) : null,
+        direction: dirs[raw.direction] || "",
+        confidence: conf,
+        note: String(raw.note || "").slice(0, 200)
+    };
+}
+
 // ---- Gmail import helpers ----
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";   // read-only access to your email
 const GMAIL_QUERY_KEY = "deerGmailQuery";       // where the Gmail search text is saved
@@ -5504,12 +5600,20 @@ function getMaintenance() {
 }
 
 // Everything on the Settings tab as one object (so it can ride along with Drive sync and backups)
-function getSettingsBundle(theme, maintenance) {
-    return {
+function getSettingsBundle(theme, maintenance, withSecrets) {
+
+    const bundle = {
         theme: theme,
         maintenance: maintenance,
         scoring: { v: SCORING_DEFAULTS_VERSION, score: SCORE_CONFIG, stand: STAND_SCORE_CONFIG }
     };
+
+    // the AI key is only included in the private Drive copy, never in a backup file you might share
+    if (withSecrets) {
+        bundle.ai = { key: getAiKey(), auto: localStorage.getItem(AI_AUTO_STORAGE) !== "0" };
+    }
+
+    return bundle;
 }
 
 // ---- Google Drive sync ----
@@ -5841,6 +5945,10 @@ function App() {
     const [powerWeek, setPowerWeek] = useState("latest");  // week picked in Weekly Power Rankings ('latest' = this week)
     const [emailItems, setEmailItems] = useState([]);  // photo emails waiting to be turned into sightings
     const [emailBusy, setEmailBusy] = useState(false);  // true while fetching emails
+    const [aiKey, setAiKey] = useState(getAiKey);  // Anthropic API key for the AI photo helper
+    const [aiAuto, setAiAuto] = useState(function() { return localStorage.getItem(AI_AUTO_STORAGE) !== "0"; });  // suggest automatically after Fetch?
+    const [aiUsage, setAiUsage] = useState(getAiUsage);  // photos / tokens used so far
+    const [aiMessage, setAiMessage] = useState("");  // result of the Test button
     const [emailStatus, setEmailStatus] = useState("");  // progress / error text on the Email tab
     const [emailPhoto, setEmailPhoto] = useState(null);  // photo shown full screen (null = none)
     const [emailOcr, setEmailOcr] = useState(function() { return localStorage.getItem("deerEmailOcr") !== "0"; });  // read the camera name from the photo's black bar?
@@ -5934,6 +6042,12 @@ function App() {
             setMaintenance({ ...MAINT_DEFAULT, ...settings.maintenance });
         }
 
+        // the AI key from your Drive copy (only replaces this device's key if Drive has one)
+        if (settings.ai && typeof settings.ai.key === "string" && settings.ai.key) {
+            try { localStorage.setItem(AI_KEY_STORAGE, settings.ai.key); } catch (error) {}
+            setAiKey(settings.ai.key);
+        }
+
         if (settings.scoring && settings.scoring.v === SCORING_DEFAULTS_VERSION) {
             applyScoringSettings(settings.scoring);
             saveScoringSettings();
@@ -6014,7 +6128,7 @@ function App() {
             hunts: getHunts(),
             features: getFeatures(),
             // colours, scoring numbers and reminder settings travel with the data so every device matches
-            settings: getSettingsBundle(getTheme(), getMaintenance())
+            settings: getSettingsBundle(getTheme(), getMaintenance(), true)
         };
 
         const result = await driveUpload(
@@ -9561,6 +9675,79 @@ function App() {
         });
     }
 
+    // ---- AI PHOTO HELPER ----
+    function changeAiKey(value) {
+        const v = value.trim();
+        try { localStorage.setItem(AI_KEY_STORAGE, v); } catch (error) {}
+        setAiKey(v);
+        setAiMessage("");
+        setSettingsVersion(function(n) { return n + 1; });  // lets the key sync to Drive
+    }
+
+    async function testAiKey() {
+
+        if (!aiKey) { setAiMessage("Paste a key first."); return; }
+
+        setAiMessage("Testing…");
+
+        try {
+            const response = await fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-api-key": aiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+                body: JSON.stringify({ model: AI_MODEL, max_tokens: 5, messages: [{ role: "user", content: "Say OK" }] })
+            });
+
+            let body = null;
+            try { body = await response.json(); } catch (error) {}
+
+            setAiMessage(response.ok ? "✅ The key works." : "❌ " + (response.status === 401 ? "The key was rejected." : "Failed (" + response.status + (body && body.error ? ": " + body.error.message : "") + ")."));
+        } catch (error) {
+            setAiMessage("❌ Couldn't reach the AI service (" + (error && error.message ? error.message : "no connection") + ").");
+        }
+    }
+
+    // Ask Haiku about one card and fill in its fields (you still confirm them)
+    async function aiSuggest(item) {
+
+        const key = getAiKey();
+
+        if (!key) {
+            updateEmailItem(item.key, { ai: { status: "error", note: "Add your API key in Settings first." } });
+            return;
+        }
+
+        updateEmailItem(item.key, { ai: { status: "working" } });
+
+        try {
+            const out = await aiLookAtPhotos(key, item.images);
+            const r = out.result;
+
+            setAiUsage(addAiUsage(out.usage));
+
+            const patch = { ai: { status: "done", confidence: r.confidence, note: r.note, noDeer: r.deerType === "None", suggested: r } };
+
+            if (r.deerType !== "None") {
+                patch.deerType = r.deerType;
+                patch.number = String(r.number);
+                patch.antlerPoints = r.antlerPoints === null ? "" : String(r.antlerPoints);
+                patch.direction = r.direction;
+            }
+
+            updateEmailItem(item.key, patch);
+
+        } catch (error) {
+            updateEmailItem(item.key, { ai: { status: "error", note: error && error.message ? error.message : "The AI request failed." } });
+        }
+    }
+
+    async function aiSuggestMany(list) {
+
+        for (let i = 0; i < list.length; i++) {
+            setEmailStatus("AI is looking at card " + (i + 1) + " of " + list.length + "…");
+            await aiSuggest(list[i]);
+        }
+    }
+
     // FETCH button: sign in to Gmail if needed, find trail camera emails we haven't handled, and make cards for their photos
     async function fetchEmails() {
 
@@ -9646,6 +9833,12 @@ function App() {
                     : "No new photos found."
             );
 
+            // let the AI fill in each new card (you still check and confirm them)
+            if (groups.length && getAiKey() && localStorage.getItem(AI_AUTO_STORAGE) !== "0") {
+                await aiSuggestMany(groups);
+                setEmailStatus("Found " + loaded.length + " new photo" + (loaded.length === 1 ? "" : "s") + " in " + groups.length + " card" + (groups.length === 1 ? "" : "s") + ". The AI filled in its guesses; check them and tap Confirm.");
+            }
+
         } catch (error) {
 
             // a 401 means the Gmail pass expired; the next tap asks for a new one
@@ -9722,6 +9915,16 @@ function App() {
         };
 
         if (thumb) sighting.thumb = thumb;
+
+        // remember what the AI guessed and whether you agreed (shown as accuracy in Settings)
+        if (item.ai && item.ai.status === "done" && item.ai.suggested) {
+            sighting.ai = {
+                type: item.ai.suggested.deerType,
+                typeOk: item.ai.suggested.deerType === item.deerType,
+                dirOk: (item.ai.suggested.direction || "") === (item.direction || ""),
+                conf: item.ai.confidence
+            };
+        }
 
         setCameras(function(previous) {
             return previous.map(function(c) {
@@ -9842,6 +10045,30 @@ function App() {
                             (item.photoIds.length > 1 ? " (" + item.photoIds.length + " photos in a row grouped together.)" : "")
                         ),
 
+                        // the AI helper's suggestion box
+                        (function() {
+
+                            const ai = item.ai;
+                            const box = { background: "var(--page)", border: "1px solid var(--line)", borderRadius: "8px", padding: "8px 10px", margin: "0 0 12px", fontSize: "13px" };
+
+                            if (ai && ai.status === "working") return e("div", { style: box }, "✨ The AI is looking at the photos…");
+
+                            if (ai && ai.status === "done") {
+                                return e("div", { style: box },
+                                    "✨ AI suggestion (" + ai.confidence + " confidence): " + ai.note + (ai.noDeer ? " It sees no deer, so this one is probably a Skip." : " It filled in the fields below. Check them, then tap Confirm."),
+                                    e("div", { style: { marginTop: "6px" } }, e("button", { className: "secondary", style: { minHeight: 0, padding: "4px 10px" }, onClick: function() { aiSuggest(item); } }, "Ask again")));
+                            }
+
+                            if (ai && ai.status === "error") {
+                                return e("div", { style: { ...box, borderColor: "#c0392b" } }, "⚠ " + ai.note,
+                                    aiKey ? e("div", { style: { marginTop: "6px" } }, e("button", { className: "secondary", style: { minHeight: 0, padding: "4px 10px" }, onClick: function() { aiSuggest(item); } }, "Try again")) : null);
+                            }
+
+                            return aiKey
+                                ? e("div", { style: { margin: "0 0 12px" } }, e("button", { className: "secondary", onClick: function() { aiSuggest(item); } }, "✨ Suggest with AI"))
+                                : null;
+                        })(),
+
                         field("Deer type", e(
                             "select",
                             {
@@ -9892,7 +10119,7 @@ function App() {
                                 className: "primary",
                                 disabled: !item.cameraId || !item.deerType,
                                 onClick: function() { addEmailSighting(item); }
-                            }, "Add sighting"),
+                            }, item.ai && item.ai.status === "done" && !item.ai.noDeer ? "Confirm & add" : "Add sighting"),
                             e("button", {
                                 className: "secondary",
                                 onClick: function() { skipEmailItem(item); }
@@ -9964,6 +10191,20 @@ function App() {
                         disabled: emailBusy,
                         onClick: fetchEmails
                     }, emailBusy ? "Working..." : "Fetch new photos"),
+
+                    aiKey && emailItems.some(function(i) { return !i.ai || i.ai.status === "error"; })
+                        ? e("button", {
+                            className: "secondary",
+                            style: { marginLeft: "8px" },
+                            disabled: emailBusy,
+                            onClick: async function() {
+                                setEmailBusy(true);
+                                try { await aiSuggestMany(emailItems.filter(function(i) { return !i.ai || i.ai.status === "error"; })); setEmailStatus("The AI is done. Check the guesses and confirm."); } finally { setEmailBusy(false); }
+                            }
+                        }, "✨ Suggest all")
+                        : null,
+
+                    !aiKey ? e("p", { className: "empty", style: { margin: "10px 0 0", fontSize: "12px" } }, "Tip: add an Anthropic API key in Settings and the AI will suggest the deer type, number, antlers and direction for you to confirm.") : null,
 
                     emailStatus
                         ? e("p", { style: { margin: "12px 0 0", fontSize: "13px" } }, emailStatus)
@@ -11334,6 +11575,35 @@ function App() {
                     field("History needed first (days)", sc, "weatherMinDays", "Weather adjustment stays off until you have this many days of sightings.", 1),
                     field("Buck missing alert (days)", sc, "buckAlertDays", "A named buck with 3+ sightings not seen for this long shows an alert on the Bucks and Hunt tabs.", 1),
                     e("p", { className: "empty", style: { marginBottom: 0 } }, "Off by default. It compares how many deer you saw per hour under each weather condition (pressure trend, temperature, wind) in your prime hours, then nudges the Hunt tab's scores. Needs a connection to download past weather.")
+                ),
+
+                e(
+                    "div",
+                    { className: "dashboard-card", style: { marginBottom: "20px" } },
+                    e("h3", null, "AI photo helper"),
+                    e("p", { className: "empty", style: { marginTop: 0 } }, "On the Email tab, Claude Haiku looks at each photo and suggests the deer type, number, antler points and direction. You always check and confirm before anything is added. The photos on the card (small copies) are sent to Anthropic for this."),
+                    e("div", { className: "form-group" },
+                        e("label", null, "Anthropic API key"),
+                        e("input", { type: "password", value: aiKey, autoComplete: "off", placeholder: "sk-ant-…", onChange: function(ev) { changeAiKey(ev.target.value); } }),
+                        e("div", { className: "empty", style: { fontSize: "12px" } }, "Saved on this device and, once you connect Google Drive, in your private app folder in Drive so your other devices get it too. It is not included in backup files or shared snapshots. Create a key at console.anthropic.com and consider setting a low monthly spend limit on it.")),
+                    e("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
+                        e("button", { className: "secondary", onClick: testAiKey }, "Test key"),
+                        aiMessage ? e("span", { style: { fontSize: "13px" } }, aiMessage) : null),
+                    e("label", { style: { display: "flex", alignItems: "center", gap: "10px", padding: "10px 0 4px" } },
+                        e("input", { type: "checkbox", checked: aiAuto, style: { width: "20px", height: "20px", minHeight: 0 }, onChange: function(ev) { setAiAuto(ev.target.checked); try { localStorage.setItem(AI_AUTO_STORAGE, ev.target.checked ? "1" : "0"); } catch (error) {} setSettingsVersion(function(n) { return n + 1; }); } }),
+                        "Suggest automatically after Fetch new photos"),
+                    (function() {
+
+                        let total = 0, typeOk = 0, dirOk = 0;
+
+                        cameras.forEach(function(c) { c.sightings.forEach(function(sg) { if (sg.ai) { total++; if (sg.ai.typeOk) typeOk++; if (sg.ai.dirOk) dirOk++; } }); });
+
+                        const cost = aiUsage.input * AI_PRICE_IN + aiUsage.output * AI_PRICE_OUT;
+
+                        return e("div", { className: "empty", style: { marginBottom: 0 } },
+                            e("div", null, "Used so far: " + aiUsage.calls + " card" + (aiUsage.calls === 1 ? "" : "s") + ", about $" + cost.toFixed(3) + " (Haiku 5.5 prices, an estimate)."),
+                            total ? e("div", null, "You agreed with its deer type " + typeOk + " of " + total + " times, and its direction " + dirOk + " of " + total + " times.") : e("div", null, "Once you confirm some sightings, its hit rate shows here."));
+                    })()
                 ),
 
                 e(
@@ -13012,7 +13282,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v24")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v25")
             ),
 
             e(
