@@ -1866,7 +1866,7 @@ const AI_SYSTEM = "You look at trail camera photos of white-tailed deer for a hu
     "antlerPoints: your best count of total antler points for the biggest buck, or null if no buck or you can't tell.\n" +
     "direction: which way the main deer is travelling relative to the camera: \"TOWARD\" (walking toward the camera), \"AWAY\" (walking away), \"LR\" (moving left to right across the frame), \"RL\" (right to left), or \"UNKNOWN\" if it is standing, feeding or unclear. If there are several photos in a row, use how the deer moves between them.\n" +
     "confidence: \"high\", \"medium\" or \"low\".\n" +
-    "note: one short sentence on what you see and anything uncertain (night infrared, partly hidden, etc.).\n" +
+    "note: one short sentence (under 25 words, no double quotes) on what you see and anything uncertain (night infrared, partly hidden, etc.).\n" +
     "Be honest about uncertainty; the hunter will check your answer.";
 
 // Sends up to 3 photos (data URLs) to Haiku and returns { result, usage }
@@ -1888,7 +1888,7 @@ async function aiLookAtPhotos(apiKey, images) {
             "anthropic-version": "2023-06-01",
             "anthropic-dangerous-direct-browser-access": "true"
         },
-        body: JSON.stringify({ model: AI_MODEL, max_tokens: 300, system: AI_SYSTEM, messages: [{ role: "user", content: content }] })
+        body: JSON.stringify({ model: AI_MODEL, max_tokens: 700, system: AI_SYSTEM, messages: [{ role: "user", content: content }] })
     });
 
     let body = null;
@@ -1901,12 +1901,49 @@ async function aiLookAtPhotos(apiKey, images) {
             "AI request failed (" + response.status + (detail ? ": " + detail : "") + ")");
     }
 
-    const text = ((body.content || []).find(function(c) { return c.type === "text"; }) || {}).text || "";
-    const found = text.match(/\{[\s\S]*\}/);
+    const text = (body.content || []).filter(function(c) { return c.type === "text"; }).map(function(c) { return c.text; }).join("\n");
+    const raw = readAiJson(text);
 
-    if (!found) throw new Error("The AI's answer wasn't readable.");
+    if (!raw) {
+        throw new Error(body.stop_reason === "refusal"
+            ? "The AI declined to look at that photo."
+            : "The AI's answer wasn't readable" + (text ? " (it said: " + text.replace(/\s+/g, " ").slice(0, 90) + ")" : " (it sent nothing back)") + ". Tap Try again.");
+    }
 
-    return { result: parseAiAnswer(JSON.parse(found[0])), usage: body.usage };
+    return { result: parseAiAnswer(raw), usage: body.usage };
+}
+
+// Reads the AI's answer even if it is wrapped in text or code fences, cut off, or has a stray quote mark.
+// Returns an object, or null if not even the deer type can be found.
+function readAiJson(text) {
+
+    const whole = String(text || "").match(/\{[\s\S]*\}/);
+
+    if (whole) {
+        try { return JSON.parse(whole[0]); } catch (error) {}
+    }
+
+    // fall back to pulling each field out on its own
+    const pick = function(name) {
+        const m = text.match(new RegExp('"' + name + '"\\s*:\\s*("([^"]*)"|-?[0-9.]+|null)'));
+        if (!m) return undefined;
+        return m[2] !== undefined ? m[2] : (m[1] === "null" ? null : Number(m[1]));
+    };
+
+    const deerType = pick("deerType");
+
+    if (deerType === undefined) return null;
+
+    const noteMatch = String(text).match(/"note"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)/);
+
+    return {
+        deerType: deerType,
+        number: pick("number"),
+        antlerPoints: pick("antlerPoints"),
+        direction: pick("direction"),
+        confidence: pick("confidence"),
+        note: noteMatch ? noteMatch[1] : ""
+    };
 }
 
 // Cleans the AI's answer into values the Email cards use
@@ -13282,7 +13319,7 @@ function App() {
                 "h1",
                 null,
                 "Deer Trail Cam Scorer",
-                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v25")
+                e("span", { style: { fontSize: "11px", opacity: 0.7, marginLeft: "8px", fontWeight: 400 } }, "v26")
             ),
 
             e(
